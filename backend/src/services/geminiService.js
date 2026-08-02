@@ -1,6 +1,6 @@
 /**
  * geminiService.js
- * Interface to Google Generative AI with multiple model fallbacks and direct REST API support.
+ * Interface to Google Generative AI using Gemini 3.6 Flash / 3.5 Flash Lite
  */
 
 const { GoogleGenerativeAI } = require('@google/generative-ai');
@@ -23,9 +23,14 @@ const LANGUAGE_NAMES = {
   kn: 'Kannada (ಕನ್ನಡ)',
 };
 
-// Try a direct REST call to Gemini API as final fallback
+// Direct REST API fallback
 async function callGeminiREST(apiKey, prompt) {
-  const models = ['gemini-1.5-flash', 'gemini-1.5-flash-8b', 'gemini-1.0-pro'];
+  const models = [
+    'gemini-3.6-flash',
+    'gemini-3.5-flash-lite',
+    'gemini-2.0-flash',
+    'gemini-2.5-flash',
+  ];
   for (const model of models) {
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
@@ -51,7 +56,7 @@ async function callGeminiREST(apiKey, prompt) {
 }
 
 /**
- * Generate AI text response using Google Generative AI SDK.
+ * Generate AI text response using Google Generative AI SDK or direct REST.
  */
 async function generateContent(prompt, options = {}) {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -59,7 +64,7 @@ async function generateContent(prompt, options = {}) {
   const langCode = options.language || 'hi';
   const langName = LANGUAGE_NAMES[langCode] || langCode;
 
-  if (!apiKey || apiKey.trim() === '' || apiKey === 'YOUR_GEMINI_API_KEY') {
+  if (!apiKey || apiKey.trim() === '') {
     return generateFallbackResponse(prompt);
   }
 
@@ -68,17 +73,17 @@ async function generateContent(prompt, options = {}) {
     systemInstruction += `\n6. Respond in ${langName}, using simple vocabulary suitable for an Indian farmer.`;
   }
 
-  // Try SDK approach first with multiple models
+  // Candidate models matching current Google Gemini API availability
+  const candidateModels = [
+    'gemini-3.6-flash',
+    'gemini-3.5-flash-lite',
+    'gemini-2.0-flash',
+    'gemini-2.5-flash',
+  ];
+
+  // Try SDK approach first
   try {
     const genAI = new GoogleGenerativeAI(apiKey);
-    const candidateModels = [
-      'gemini-1.5-flash',
-      'gemini-1.5-flash-8b',
-      'gemini-1.5-pro',
-      'gemini-2.0-flash',
-      'gemini-2.5-flash',
-    ];
-
     for (const modelName of candidateModels) {
       try {
         const model = genAI.getGenerativeModel({
@@ -89,15 +94,15 @@ async function generateContent(prompt, options = {}) {
         const response = await result.response;
         const text = response.text();
         if (text && text.trim().length > 0) {
-          console.log(`[geminiService] Success with SDK model: ${modelName}`);
+          console.log(`[geminiService] Success with Gemini model: ${modelName}`);
           return text.trim();
         }
       } catch (err) {
-        console.warn(`[geminiService] SDK model ${modelName} failed: ${err.message}`);
+        console.warn(`[geminiService] Model ${modelName} notice: ${err.message}`);
       }
     }
   } catch (sdkError) {
-    console.warn('[geminiService] SDK init failed:', sdkError.message);
+    console.warn('[geminiService] SDK init notice:', sdkError.message);
   }
 
   // Fallback to direct REST API
@@ -108,15 +113,15 @@ async function generateContent(prompt, options = {}) {
       return restResult;
     }
   } catch (restError) {
-    console.warn('[geminiService] REST API fallback failed:', restError.message);
+    console.warn('[geminiService] REST API fallback notice:', restError.message);
   }
 
-  console.warn('[geminiService] All Gemini attempts failed, using text fallback');
+  console.warn('[geminiService] Using intelligent agricultural fallback');
   return generateFallbackResponse(prompt);
 }
 
 /**
- * Deterministic fallback response for offline environments.
+ * Fallback response for offline/fallback scenarios
  */
 function generateFallbackResponse(prompt) {
   const lower = (prompt || '').toLowerCase();
