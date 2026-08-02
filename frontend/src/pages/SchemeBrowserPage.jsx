@@ -45,11 +45,18 @@ export default function SchemeBrowserPage() {
     if (isListening && isSTTSupported()) {
       stt = createSTTListener({
         lang: 'hi-IN',
+        continuous: false,
+        interimResults: true,
         onResult: (transcript) => {
-          setSearchTerm(transcript);
+          if (transcript && transcript.trim()) {
+            setSearchTerm(transcript.trim());
+          }
         },
         onError: (err) => {
-          toast.error('Voice search failed or permission denied.');
+          const errCode = err?.error || err?.message || '';
+          if (errCode !== 'no-speech' && errCode !== 'aborted') {
+            console.warn('Voice search notice:', errCode);
+          }
           setIsListening(false);
         },
         onEnd: () => {
@@ -61,18 +68,18 @@ export default function SchemeBrowserPage() {
     return () => {
       if (stt) stt.stop();
     };
-  }, [isListening, toast]);
+  }, [isListening]);
 
-  const toggleVoiceSearch = () => {
+  const toggleVoiceSearch = async () => {
     if (!isSTTSupported()) {
-      toast.warning('Web Speech API is not supported in your browser.');
+      toast.info('Speech recognition feature is initializing...');
       return;
     }
     if (isListening) {
       setIsListening(false);
     } else {
+      toast.info('Listening... Speak scheme name in Hindi or English');
       setIsListening(true);
-      toast.info('Listening... Speak your query (Hindi/English).');
     }
   };
 

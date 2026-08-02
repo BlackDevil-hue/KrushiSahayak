@@ -154,15 +154,30 @@ export default function ChatPage() {
         speechService.speakText(aiMsg.text, { lang: 'hi-IN' });
       }
     } catch (apiErr) {
-      console.warn('Backend API call failed, using fallback:', apiErr);
-      // Fallback for offline mode
-      let aiText = `Namaste! Based on your query "${text}", small & marginal farmers qualify for financial support under PM-KISAN, crop insurance via PMFBY, and solar pump grants under PM-KUSUM.`;
-      let schemeRef = SCHEMES_DATA[0];
+      console.warn('Backend API call fallback:', apiErr);
+      // Smart Conversational Fallback for Offline / Connecting state
+      let aiText = '';
+      let schemeRef = null;
+      const lower = text.toLowerCase().trim();
 
-      const lower = text.toLowerCase();
-      if (lower.includes('pm-kisan')) {
-        aiText = 'PM-KISAN provides ₹6,000/year directly to landholding farmers in 3 installments of ₹2,000.';
+      if (lower.includes('hello') || lower.includes('hi') || lower.includes('hey') || lower.includes('namaste') || lower.includes('buddy')) {
+        aiText = 'Namaste! Hello! I am KrishiSahayak, your AI farming assistant. How can I help you today with government schemes, crop insurance, or subsidy applications?';
+        schemeRef = null;
+      } else if (lower.includes('pm-kisan') || lower.includes('6000') || lower.includes('installment')) {
+        aiText = 'PM-KISAN provides ₹6,000 annually in 3 equal installments of ₹2,000 directly to eligible landholding farmers.';
         schemeRef = SCHEMES_DATA.find((s) => s.id === 'pm-kisan');
+      } else if (lower.includes('kcc') || lower.includes('loan') || lower.includes('credit')) {
+        aiText = 'Kisan Credit Card (KCC) offers collateral-free crop credit up to ₹1.60 Lakh at subsidized interest rates.';
+        schemeRef = SCHEMES_DATA.find((s) => s.id === 'kcc');
+      } else if (lower.includes('pmfby') || lower.includes('insurance')) {
+        aiText = 'PMFBY provides crop insurance coverage against natural calamities with low premiums (1.5% Rabi / 2% Kharif).';
+        schemeRef = SCHEMES_DATA.find((s) => s.id === 'pmfby');
+      } else if (lower.includes('solar') || lower.includes('kusum') || lower.includes('pump')) {
+        aiText = 'PM-KUSUM scheme offers up to 60% government subsidy for solar water pumps.';
+        schemeRef = SCHEMES_DATA.find((s) => s.id === 'pm-kusum');
+      } else {
+        aiText = `Namaste! Regarding your query, Indian farmers qualify for central income support (PM-KISAN), subsidized seed & fertilizer distributions, and micro-irrigation grants under PMKSY.`;
+        schemeRef = SCHEMES_DATA[0];
       }
 
       const aiMsg = {
@@ -181,25 +196,23 @@ export default function ChatPage() {
 
   // Handle TTS Read Aloud for Message
   const handleToggleTTS = (msgId, text) => {
-    if (!isTTSSupported()) {
-      toast.warning('Text-to-Speech is not supported in your browser.');
+    if (activeSpeechId === msgId) {
+      speechService.stopSpeech();
+      setActiveSpeechId(null);
       return;
     }
 
-    if (activeSpeechId === msgId) {
-      stopSpeech();
+    speechService.stopSpeech();
+    setActiveSpeechId(msgId);
+
+    const success = speechService.speakText(text, {
+      lang: 'hi-IN',
+      onEnd: () => setActiveSpeechId(null),
+      onError: () => setActiveSpeechId(null),
+    });
+
+    if (!success) {
       setActiveSpeechId(null);
-    } else {
-      stopSpeech();
-      setActiveSpeechId(msgId);
-      speakText(text, {
-        lang: 'hi-IN',
-        onEnd: () => setActiveSpeechId(null),
-        onError: () => {
-          setActiveSpeechId(null);
-          toast.error('TTS error occurred.');
-        },
-      });
     }
   };
 
