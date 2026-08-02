@@ -5,12 +5,13 @@ import Button from '../components/Button';
 import Input from '../components/Input';
 import { useToast } from '../context/ToastContext';
 import { useSchemes, getBookmarkedSchemeIds, toggleBookmarkSchemeId, evaluateEligibility } from '../hooks/useSchemes';
-import {
+import speechService, {
   createSTTListener,
   isSTTSupported,
   speakText,
   stopSpeech,
   isTTSSupported,
+  cleanTextForSpeech,
 } from '../services/speechService';
 import {
   Send,
@@ -105,13 +106,13 @@ export default function ChatPage() {
 
   const toggleMic = async () => {
     if (!isSTTSupported()) {
-      toast.warning('Speech Recognition is not supported on this device/browser.');
+      toast.info('Voice input is not available in this browser. Please type your question.');
       return;
     }
     if (isListening) {
       setIsListening(false);
     } else {
-      toast.info('Listening... Speak your question clearly');
+      toast.info('🎤 Listening... Speak your question');
       setIsListening(true);
     }
   };
@@ -133,25 +134,27 @@ export default function ChatPage() {
     setIsTyping(true);
 
     try {
-      // Call backend API (runs live Gemini AI with your API key)
+      // Call backend Gemini AI
       const res = await fetchAPI('/chat', {
         method: 'POST',
-        body: { message: text.trim() },
+        body: { message: text.trim(), language: 'hi' },
       });
+
+      const replyText = res.reply || res.message || res.text || 'I could not process that request. Please try again.';
 
       const aiMsg = {
         id: (Date.now() + 1).toString(),
         sender: 'ai',
-        text: res.reply || res.message,
+        text: replyText,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         schemeRef: Array.isArray(res.relevantSchemes) && res.relevantSchemes.length > 0 ? res.relevantSchemes[0] : null,
       };
 
       setMessages((prev) => [...prev, aiMsg]);
 
-      // Speak response if TTS active
-      if (isTTSActive && speechService.isTTSSupported() && aiMsg.text) {
-        speechService.speakText(aiMsg.text, { lang: 'hi-IN' });
+      // Speak response if TTS active and supported
+      if (isTTSActive && isTTSSupported() && replyText) {
+        speakText(cleanTextForSpeech(replyText), { lang: 'hi-IN' });
       }
     } catch (apiErr) {
       console.warn('Backend API call fallback:', apiErr);
@@ -197,23 +200,26 @@ export default function ChatPage() {
   // Handle TTS Read Aloud for Message
   const handleToggleTTS = (msgId, text) => {
     if (activeSpeechId === msgId) {
-      speechService.stopSpeech();
+      stopSpeech();
       setActiveSpeechId(null);
       return;
     }
 
-    speechService.stopSpeech();
-    setActiveSpeechId(msgId);
+    stopSpeech();
 
-    const success = speechService.speakText(text, {
+    if (!isTTSSupported()) {
+      setActiveSpeechId(null);
+      return; // silently do nothing if TTS not available
+    }
+
+    setActiveSpeechId(msgId);
+    const success = speakText(cleanTextForSpeech(text), {
       lang: 'hi-IN',
       onEnd: () => setActiveSpeechId(null),
       onError: () => setActiveSpeechId(null),
     });
 
-    if (!success) {
-      setActiveSpeechId(null);
-    }
+    if (!success) setActiveSpeechId(null);
   };
 
   return (

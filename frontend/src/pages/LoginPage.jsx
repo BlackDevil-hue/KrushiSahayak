@@ -1,19 +1,16 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
+import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult } from 'firebase/auth';
 import Layout from '../components/Layout';
 import Card from '../components/Card';
 import Input from '../components/Input';
 import Button from '../components/Button';
-import Modal from '../components/Modal';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
-import { Phone, KeyRound, ArrowRight, CheckCircle2, ShieldCheck, RefreshCw, UserCheck } from 'lucide-react';
-import { useSchemes } from '../hooks/useSchemes';
-
+import { Phone, KeyRound, ArrowRight, CheckCircle2, ShieldCheck, RefreshCw, Loader } from 'lucide-react';
 import { sendFirebaseOtp } from '../services/firebase';
 
 export default function LoginPage() {
-  const { schemes: SCHEMES_DATA, loading: schemesLoading } = useSchemes();
   const [step, setStep] = useState('phone'); // 'phone' | 'otp'
   const [phone, setPhone] = useState('');
   const [otp, setOtp] = useState('');
@@ -21,85 +18,113 @@ export default function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
   const [phoneError, setPhoneError] = useState('');
   const [otpError, setOtpError] = useState('');
-  const [googleModalOpen, setGoogleModalOpen] = useState(false);
-  const [selectedAccount, setSelectedAccount] = useState('govind.tripathi22@gmail.com');
-  const [customEmail, setCustomEmail] = useState('');
-  const [customName, setCustomName] = useState('');
+  const [backendReady, setBackendReady] = useState(false);
 
-  const { login, verifyOtp, googleAuth } = useAuth();
+  const { verifyOtp, googleAuth, isAuthenticated } = useAuth();
   const toast = useToast();
   const navigate = useNavigate();
   const location = useLocation();
-
   const from = location.state?.from?.pathname || '/dashboard';
 
-  // Step 1: Send REAL Firebase SMS OTP
+  // Redirect if already logged in
+  useEffect(() => {
+    if (isAuthenticated) navigate(from, { replace: true });
+  }, [isAuthenticated, navigate, from]);
+
+  // Ping backend to wake Render from sleep
+  useEffect(() => {
+    const pingBackend = async () => {
+      try {
+        const res = await fetch('https://krushi-sahayak-backend.onrender.com/api/health');
+        if (res.ok) setBackendReady(true);
+      } catch (e) {
+        setBackendReady(true); // still allow login attempt
+      }
+    };
+    pingBackend();
+  }, []);
+
+  // Handle Firebase Google Redirect result (after signInWithRedirect returns)
+  useEffect(() => {
+    const handleRedirectResult = async () => {
+      const auth = getAuth();
+      try {
+        const result = await getRedirectResult(auth);
+        if (result && result.user) {
+          setSubmitting(true);
+          const firebaseToken = await result.user.getIdToken();
+          await googleAuth({
+            idToken: firebaseToken,
+            email: result.user.email,
+            name: result.user.displayName,
+          });
+          toast.success(`Welcome, ${result.user.displayName || 'Farmer'}!`, 'Google Sign-In');
+          navigate(from, { replace: true });
+        }
+      } catch (err) {
+        if (err.code !== 'auth/no-auth-event') {
+          console.warn('Google redirect result error:', err);
+        }
+      } finally {
+        setSubmitting(false);
+      }
+    };
+    handleRedirectResult();
+  }, []);
+
+  // ── Step 1: Send Real Firebase OTP ──────────────────────────────────────────
   const handleSendOtp = async (e) => {
     e.preventDefault();
     setPhoneError('');
-    if (!phone || phone.replace(/\D/g, '').length < 10) {
+    const digits = phone.replace(/\D/g, '');
+    if (!digits || digits.length < 10) {
       setPhoneError('Please enter a valid 10-digit mobile number');
       return;
     }
 
     setSubmitting(true);
     try {
-      // Send real SMS OTP via Firebase Phone Auth
-      const result = await sendFirebaseOtp(phone.replace(/\D/g, ''), 'recaptcha-container');
+      const result = await sendFirebaseOtp(digits, 'recaptcha-container');
       setConfirmationResult(result);
-      toast.success(`OTP sent to +91-${phone.replace(/\D/g, '')} via SMS`, 'Check your phone');
+      toast.success(`OTP sent to +91-${digits}`, 'Check your SMS');
       setStep('otp');
     } catch (fbErr) {
       console.error('Firebase OTP error:', fbErr);
-      const errMsg = fbErr?.code === 'auth/too-many-requests'
-        ? 'Too many attempts. Please wait a few minutes and try again.'
-        : fbErr?.code === 'auth/invalid-phone-number'
-        ? 'Invalid phone number. Please enter a valid 10-digit number.'
-        : fbErr?.code === 'auth/captcha-check-failed'
-        ? 'Security check failed. Please refresh and try again.'
-        : 'Failed to send OTP. Please check your number and try again.';
+      let errMsg = 'Failed to send OTP. Please try again.';
+      if (fbErr?.code === 'auth/too-many-requests') errMsg = 'Too many attempts. Wait a few minutes and try again.';
+      else if (fbErr?.code === 'auth/invalid-phone-number') errMsg = 'Invalid phone number. Enter a valid 10-digit number.';
+      else if (fbErr?.code === 'auth/captcha-check-failed') errMsg = 'reCAPTCHA check failed. Please refresh and try again.';
       setPhoneError(errMsg);
       toast.error(errMsg, 'OTP Error');
-      // Reset reCAPTCHA so user can retry
-      if (window.recaptchaVerifier) {
-        window.recaptchaVerifier.clear();
-        window.recaptchaVerifier = null;
-      }
     } finally {
       setSubmitting(false);
     }
   };
 
-  // Step 2: Verify Real Firebase OTP → then get JWT from backend
+  // ── Step 2: Verify Firebase OTP → get app JWT from backend ──────────────────
   const handleVerifyOtp = async (e) => {
     if (e && e.preventDefault) e.preventDefault();
     setOtpError('');
     if (!otp || otp.trim().length < 6) {
-      setOtpError('Please enter the 6-digit OTP sent to your phone');
+      setOtpError('Please enter the 6-digit OTP from your SMS');
+      return;
+    }
+    if (!confirmationResult) {
+      setOtpError('Session expired. Please go back and request a new OTP.');
       return;
     }
 
     setSubmitting(true);
     try {
-      if (!confirmationResult) {
-        setOtpError('Session expired. Please go back and resend OTP.');
-        return;
-      }
-
-      // Confirm the real OTP with Firebase
       const firebaseResult = await confirmationResult.confirm(otp.trim());
       const firebaseToken = await firebaseResult.user.getIdToken();
-
-      // Call backend with Firebase token to get our app JWT
       await verifyOtp(phone.replace(/\D/g, ''), otp.trim(), firebaseToken);
       toast.success('Login successful! Welcome to KrishiSahayak.', 'Welcome');
-      navigate('/dashboard', { replace: true });
+      navigate(from, { replace: true });
     } catch (err) {
-      const errMsg = err?.code === 'auth/invalid-verification-code'
-        ? 'Wrong OTP. Please check the SMS and try again.'
-        : err?.code === 'auth/code-expired'
-        ? 'OTP expired. Please go back and request a new one.'
-        : 'OTP verification failed. Please try again.';
+      let errMsg = 'OTP verification failed. Please try again.';
+      if (err?.code === 'auth/invalid-verification-code') errMsg = 'Wrong OTP code. Please check your SMS.';
+      else if (err?.code === 'auth/code-expired') errMsg = 'OTP expired. Please go back and request a new code.';
       setOtpError(errMsg);
       toast.error(errMsg, 'Verification Failed');
     } finally {
@@ -107,46 +132,44 @@ export default function LoginPage() {
     }
   };
 
-  // Direct Google OAuth Handler (No hardcoded names/emails)
+  // ── Google Sign-In ──────────────────────────────────────────────────────────
   const handleGoogleLogin = async () => {
     setSubmitting(true);
-    const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+    const auth = getAuth();
+    const provider = new GoogleAuthProvider();
+    provider.addScope('email');
+    provider.addScope('profile');
 
-    // 1. Try native Google GSI prompt if client ID is set
-    if (window.google?.accounts?.id && googleClientId) {
-      try {
-        window.google.accounts.id.initialize({
-          client_id: googleClientId,
-          callback: async (response) => {
-            try {
-              await googleAuth({ idToken: response.credential });
-              toast.success('Signed in with Google!', 'Welcome');
-              navigate('/dashboard', { replace: true });
-            } catch (err) {
-              await googleAuth({ provider: 'google' });
-              navigate('/dashboard', { replace: true });
-            } finally {
-              setSubmitting(false);
-            }
-          },
-        });
-        window.google.accounts.id.prompt();
-        return;
-      } catch (e) {
-        console.warn('GSI prompt notice:', e);
-      }
-    }
-
-    // 2. Direct Google Auth login fallback
     try {
-      await googleAuth({ provider: 'google' });
-      toast.success('Signed in with Google! Welcome to KrishiSahayak.', 'Welcome');
-      navigate('/dashboard', { replace: true });
-    } catch (err) {
-      console.warn('Google sign-in error:', err);
-      toast.error('Google sign-in failed. Please try again.');
-    } finally {
-      setSubmitting(false);
+      // Try popup first (works in browsers and some WebViews)
+      const result = await signInWithPopup(auth, provider);
+      const firebaseToken = await result.user.getIdToken();
+      await googleAuth({
+        idToken: firebaseToken,
+        email: result.user.email,
+        name: result.user.displayName,
+      });
+      toast.success(`Welcome, ${result.user.displayName || 'Farmer'}!`, 'Google Sign-In');
+      navigate(from, { replace: true });
+    } catch (popupErr) {
+      // If popup is blocked (Android WebView), fall back to redirect
+      if (
+        popupErr.code === 'auth/popup-blocked' ||
+        popupErr.code === 'auth/popup-closed-by-user' ||
+        popupErr.code === 'auth/cancelled-popup-request'
+      ) {
+        try {
+          await signInWithRedirect(auth, provider);
+          // Result handled by getRedirectResult in useEffect above
+        } catch (redirectErr) {
+          toast.error('Google sign-in failed. Please try again.');
+          setSubmitting(false);
+        }
+      } else {
+        console.error('Google sign-in error:', popupErr);
+        toast.error('Google sign-in failed. Please try OTP login instead.');
+        setSubmitting(false);
+      }
     }
   };
 
@@ -161,12 +184,8 @@ export default function LoginPage() {
           padding: '24px 16px',
         }}
       >
-        <Card
-          elevation="shadow-md"
-          padding="lg"
-          style={{ width: '100%', maxWidth: '440px' }}
-        >
-          {/* Header Icon */}
+        <Card elevation="shadow-md" padding="lg" style={{ width: '100%', maxWidth: '440px' }}>
+          {/* Header */}
           <div style={{ textAlign: 'center', marginBottom: '24px' }}>
             <div
               style={{
@@ -184,38 +203,39 @@ export default function LoginPage() {
               {step === 'phone' ? <Phone size={28} /> : <KeyRound size={28} />}
             </div>
             <h2 style={{ fontSize: 'var(--font-size-2xl)', margin: 0 }}>
-              {step === 'phone' ? 'Farmer Sign In' : 'Enter OTP Verification'}
+              {step === 'phone' ? 'Farmer Sign In' : 'Enter OTP'}
             </h2>
             <p style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-muted)', marginTop: '4px' }}>
               {step === 'phone'
-                ? 'Enter your mobile number to receive a secure OTP code'
+                ? 'Enter your mobile number to receive OTP via SMS'
                 : `Enter the 6-digit code sent to +91 ${phone}`}
             </p>
           </div>
 
-          {/* Development Hint Banner */}
-          <div
-            style={{
-              padding: '10px 14px',
-              backgroundColor: 'var(--color-accent-light)',
-              border: '1px solid var(--color-accent-container)',
-              borderRadius: 'var(--radius-md)',
-              marginBottom: '20px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '10px',
-            }}
-          >
-            <ShieldCheck size={20} style={{ color: 'var(--color-accent-hover)', flexShrink: 0 }} />
-            <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-primary)' }}>
-              <strong>Dev Code Hint:</strong> Use OTP <code>123456</code> for instant verification testing.
+          {/* Backend warming indicator */}
+          {!backendReady && (
+            <div
+              style={{
+                padding: '10px 14px',
+                backgroundColor: 'var(--color-accent-light)',
+                border: '1px solid var(--color-accent-container)',
+                borderRadius: 'var(--radius-md)',
+                marginBottom: '16px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+                fontSize: 'var(--font-size-xs)',
+              }}
+            >
+              <Loader size={16} style={{ animation: 'spin 1s linear infinite', color: 'var(--color-accent-hover)' }} />
+              <span>Connecting to server... (first load may take 30 seconds)</span>
             </div>
-          </div>
+          )}
 
-          {/* Firebase Recaptcha Container */}
-          <div id="recaptcha-container"></div>
+          {/* Invisible reCAPTCHA container */}
+          <div id="recaptcha-container" />
 
-          {/* Form Step 1: Mobile Input */}
+          {/* Step 1: Phone */}
           {step === 'phone' && (
             <form onSubmit={handleSendOtp}>
               <Input
@@ -223,15 +243,17 @@ export default function LoginPage() {
                 type="tel"
                 placeholder="e.g. 9876543210"
                 value={phone}
-                onChange={(e) => setPhone(e.target.value.replace(/\D/g, ''))}
+                onChange={(e) => {
+                  setPhone(e.target.value.replace(/\D/g, ''));
+                  setPhoneError('');
+                }}
                 maxLength={10}
                 required
                 icon={Phone}
                 startAdornment={<span style={{ fontWeight: '600', color: 'var(--color-text-muted)' }}>+91</span>}
                 error={phoneError}
-                helperText="We will send a 6-digit verification code"
+                helperText="We will send a 6-digit verification code via SMS"
               />
-
               <Button
                 type="submit"
                 variant="primary"
@@ -242,18 +264,19 @@ export default function LoginPage() {
                 iconPosition="right"
                 style={{ marginTop: '16px' }}
               >
-                Sign In & Go to Dashboard
+                Send OTP
               </Button>
             </form>
           )}
 
-          {/* Form Step 2: OTP Verification */}
+          {/* Step 2: OTP */}
           {step === 'otp' && (
             <form onSubmit={handleVerifyOtp}>
               <Input
                 label="Verification Code (OTP)"
-                type="number"
-                placeholder="Enter 6-digit OTP from SMS"
+                type="tel"
+                inputMode="numeric"
+                placeholder="Enter 6-digit OTP"
                 value={otp}
                 onChange={(e) => {
                   setOtp(e.target.value.replace(/\D/g, '').slice(0, 6));
@@ -265,7 +288,6 @@ export default function LoginPage() {
                 error={otpError}
                 helperText={`OTP sent to +91-${phone}`}
               />
-
               <Button
                 type="submit"
                 variant="primary"
@@ -274,22 +296,22 @@ export default function LoginPage() {
                 loading={submitting}
                 icon={CheckCircle2}
                 iconPosition="right"
-                style={{ marginTop: '8px' }}
+                style={{ marginTop: '12px' }}
               >
                 Verify & Sign In
               </Button>
-
               <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '16px', fontSize: 'var(--font-size-sm)' }}>
                 <button
                   type="button"
-                  onClick={() => setStep('phone')}
+                  onClick={() => { setStep('phone'); setOtp(''); setOtpError(''); }}
                   style={{ background: 'none', border: 'none', color: 'var(--color-primary)', cursor: 'pointer', fontWeight: '500' }}
                 >
-                  Change Mobile Number
+                  ← Change Number
                 </button>
                 <button
                   type="button"
                   onClick={handleSendOtp}
+                  disabled={submitting}
                   style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}
                 >
                   <RefreshCw size={14} /> Resend OTP
@@ -299,21 +321,13 @@ export default function LoginPage() {
           )}
 
           {/* Divider */}
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              margin: '24px 0',
-              color: 'var(--color-text-muted)',
-              fontSize: 'var(--font-size-xs)',
-            }}
-          >
+          <div style={{ display: 'flex', alignItems: 'center', margin: '24px 0', color: 'var(--color-text-muted)', fontSize: 'var(--font-size-xs)' }}>
             <div style={{ flex: 1, height: '1px', backgroundColor: 'var(--color-border)' }} />
             <span style={{ padding: '0 12px' }}>OR</span>
             <div style={{ flex: 1, height: '1px', backgroundColor: 'var(--color-border)' }} />
           </div>
 
-          {/* Google OAuth Button */}
+          {/* Google Sign-In */}
           <button
             type="button"
             onClick={handleGoogleLogin}
@@ -331,32 +345,21 @@ export default function LoginPage() {
               alignItems: 'center',
               justifyContent: 'center',
               gap: '12px',
-              cursor: 'pointer',
-              transition: 'background-color var(--transition-fast)',
+              cursor: submitting ? 'not-allowed' : 'pointer',
+              opacity: submitting ? 0.7 : 1,
+              transition: 'all 0.2s',
             }}
           >
             <svg width="20" height="20" viewBox="0 0 24 24">
-              <path
-                fill="#4285F4"
-                d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-              />
-              <path
-                fill="#34A853"
-                d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-              />
-              <path
-                fill="#FBBC05"
-                d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-              />
-              <path
-                fill="#EA4335"
-                d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-              />
+              <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+              <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+              <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
+              <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
             </svg>
             Sign in with Google
           </button>
 
-          {/* Footer Navigation */}
+          {/* Footer */}
           <div style={{ textAlign: 'center', marginTop: '24px', fontSize: 'var(--font-size-sm)', color: 'var(--color-text-muted)' }}>
             New to KrishiSahayak?{' '}
             <Link to="/register" style={{ color: 'var(--color-primary)', fontWeight: 'var(--font-weight-semibold)' }}>

@@ -1,13 +1,10 @@
 /**
  * geminiService.js
- * Interface to Google Generative AI (@google/generative-ai) with dev/test fallback support.
+ * Interface to Google Generative AI with multiple model fallbacks and direct REST API support.
  */
 
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
-/**
- * System instruction for the KrishiSahayak Agricultural AI Assistant.
- */
 const SYSTEM_INSTRUCTION = `You are KrishiSahayak, an empathetic and knowledgeable AI assistant dedicated to helping Indian farmers understand government agricultural schemes, subsidies, loan processes, and crop management.
 Follow these core guidelines in all responses:
 1. Use simple, clear, and empathetic language suitable for farmers.
@@ -26,86 +23,125 @@ const LANGUAGE_NAMES = {
   kn: 'Kannada (ಕನ್ನಡ)',
 };
 
+// Try a direct REST call to Gemini API as final fallback
+async function callGeminiREST(apiKey, prompt) {
+  const models = ['gemini-1.5-flash', 'gemini-1.5-flash-8b', 'gemini-1.0-pro'];
+  for (const model of models) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+      const body = {
+        contents: [{ parts: [{ text: `${SYSTEM_INSTRUCTION}\n\nUser: ${prompt}` }] }],
+        generationConfig: { temperature: 0.7, maxOutputTokens: 1024 },
+      };
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (response.ok) {
+        const data = await response.json();
+        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (text && text.trim()) return text.trim();
+      }
+    } catch (e) {
+      // try next model
+    }
+  }
+  return null;
+}
+
 /**
- * Generate AI text response using Google Generative AI SDK, falling back gracefully when key is missing or call fails.
- * @param {string} prompt - Prompt compiled by RAG service or document analyzer.
- * @param {object} options - Optional config { model, systemInstruction, language }
- * @returns {Promise<string>} Generated text content.
+ * Generate AI text response using Google Generative AI SDK.
  */
 async function generateContent(prompt, options = {}) {
   const apiKey = process.env.GEMINI_API_KEY;
 
-  // Append language instruction if specified
   const langCode = options.language || 'hi';
   const langName = LANGUAGE_NAMES[langCode] || langCode;
 
-  // Use fallback if API key is missing or dummy
-  if (!apiKey || apiKey.trim() === '' || apiKey === 'YOUR_GEMINI_API_KEY' || process.env.NODE_ENV === 'test_mock') {
+  if (!apiKey || apiKey.trim() === '' || apiKey === 'YOUR_GEMINI_API_KEY') {
     return generateFallbackResponse(prompt);
   }
 
+  let systemInstruction = options.systemInstruction || SYSTEM_INSTRUCTION;
+  if (langName && !systemInstruction.includes(langName)) {
+    systemInstruction += `\n6. Respond in ${langName}, using simple vocabulary suitable for an Indian farmer.`;
+  }
+
+  // Try SDK approach first with multiple models
   try {
     const genAI = new GoogleGenerativeAI(apiKey);
-    const candidateModels = [options.model, 'gemini-3.1-flash-lite', 'gemini-2.0-flash', 'gemini-2.5-flash'].filter(Boolean);
-    let text = null;
-    let lastError = null;
+    const candidateModels = [
+      'gemini-1.5-flash',
+      'gemini-1.5-flash-8b',
+      'gemini-1.5-pro',
+      'gemini-2.0-flash',
+      'gemini-2.5-flash',
+    ];
 
     for (const modelName of candidateModels) {
       try {
-        let systemInstruction = options.systemInstruction || SYSTEM_INSTRUCTION;
-        if (langName && !systemInstruction.includes(langName)) {
-          systemInstruction += `\n6. Respond in ${langName}, using simple, clear, and empathetic vocabulary suitable for an Indian farmer with limited literacy.`;
-        }
-
         const model = genAI.getGenerativeModel({
           model: modelName,
           systemInstruction: systemInstruction,
         });
-
         const result = await model.generateContent(prompt);
         const response = await result.response;
-        const resText = response.text();
-        if (resText && resText.trim().length > 0) {
-          text = resText.trim();
-          break;
+        const text = response.text();
+        if (text && text.trim().length > 0) {
+          console.log(`[geminiService] Success with SDK model: ${modelName}`);
+          return text.trim();
         }
       } catch (err) {
-        lastError = err;
+        console.warn(`[geminiService] SDK model ${modelName} failed: ${err.message}`);
       }
     }
-
-    if (text && text.trim().length > 0) {
-      return text.trim();
-    }
-
-    return generateFallbackResponse(prompt);
-  } catch (error) {
-    console.warn('[geminiService] Gemini API call failed, using dev/test fallback response:', error.message);
-    return generateFallbackResponse(prompt);
+  } catch (sdkError) {
+    console.warn('[geminiService] SDK init failed:', sdkError.message);
   }
+
+  // Fallback to direct REST API
+  try {
+    const restResult = await callGeminiREST(apiKey, prompt);
+    if (restResult) {
+      console.log('[geminiService] Success via REST API fallback');
+      return restResult;
+    }
+  } catch (restError) {
+    console.warn('[geminiService] REST API fallback failed:', restError.message);
+  }
+
+  console.warn('[geminiService] All Gemini attempts failed, using text fallback');
+  return generateFallbackResponse(prompt);
 }
 
 /**
- * Deterministic, intelligent fallback response for offline / dev / test environments.
- * @param {string} prompt - Prompt text.
- * @returns {string} Fallback assistant response.
+ * Deterministic fallback response for offline environments.
  */
 function generateFallbackResponse(prompt) {
   const lower = (prompt || '').toLowerCase();
 
+  if (lower.includes('hello') || lower.includes('hi') || lower.includes('namaste') || lower.includes('helo')) {
+    return `Namaste! I am KrishiSahayak, your AI agricultural assistant. I can help you with:\n• Government farming schemes (PM-KISAN, PMFBY, KCC)\n• Crop subsidies and grants\n• Loan application guidance\n• Document requirements\n\nHow can I help you today?`;
+  }
+
   if (lower.includes('pm-kisan') || lower.includes('pm kisan') || lower.includes('samman nidhi')) {
-    return `Namaste! Under PM-Kisan Samman Nidhi, eligible landholding farmer families receive financial support of ₹6,000 per year in three equal installments of ₹2,000. Required documents include Aadhaar card, land ownership documents (7/12 extract / Khatauni), and bank account passbook linked with Aadhaar. Applications can be submitted at pmkisan.gov.in or your local Common Service Centre (CSC).`;
+    return `PM-KISAN Samman Nidhi:\n• Financial support: ₹6,000/year in 3 installments of ₹2,000\n• Eligibility: All landholding farmer families\n• Documents: Aadhaar card, land record (7/12), bank passbook\n• Apply at: pmkisan.gov.in or nearest CSC center`;
   }
 
-  if (lower.includes('kcc') || lower.includes('kisan credit card') || lower.includes('credit') || lower.includes('loan')) {
-    return `Namaste! The Kisan Credit Card (KCC) scheme provides farmers with timely access to short-term credit for crop cultivation and post-harvest expenses at subsidized interest rates. Key required documents are identity proof, address proof, land record documents, and bank passbook. Contact your local bank branch to apply.`;
+  if (lower.includes('kcc') || lower.includes('kisan credit') || lower.includes('loan')) {
+    return `Kisan Credit Card (KCC):\n• Collateral-free crop credit up to ₹1.60 Lakh\n• Subsidized interest rate: 4-7% per annum\n• Documents: Identity proof, address proof, land records, bank passbook\n• Apply at your nearest bank branch or cooperative society`;
   }
 
-  if (lower.includes('document') || lower.includes('aadhaar') || lower.includes('upload') || lower.includes('proof')) {
-    return `To apply for agricultural schemes, please ensure you have the following valid documents ready: 1. Aadhaar Card, 2. Land Ownership Record (7/12, RoR, or Khatauni), 3. Active Bank Account Passbook, 4. Passport size photographs. Ensure your name matches across all records.`;
+  if (lower.includes('pmfby') || lower.includes('fasal bima') || lower.includes('insurance')) {
+    return `PMFBY - Pradhan Mantri Fasal Bima Yojana:\n• Crop insurance against natural calamities\n• Premium: 1.5% for Rabi, 2% for Kharif crops\n• Documents: Land record, bank account, Aadhaar\n• Enroll through your bank or CSC center before sowing season`;
   }
 
-  return `Namaste! I am KrishiSahayak, your agricultural assistant. I can help you search for government schemes, understand eligibility criteria, and prepare required documents for your applications. Please feel free to ask any question about farming schemes or subsidies!`;
+  if (lower.includes('solar') || lower.includes('kusum') || lower.includes('pump')) {
+    return `PM-KUSUM Scheme:\n• Solar pump subsidy: Up to 60% government grant\n• Remaining 30% as soft bank loan\n• Farmer pays only 10%\n• Apply through your state agriculture department`;
+  }
+
+  return `Namaste! I am KrishiSahayak AI assistant. Please ask me about:\n• PM-KISAN income support\n• Kisan Credit Card (KCC) loans\n• PMFBY crop insurance\n• PM-KUSUM solar pumps\n• Any other agricultural scheme or subsidy`;
 }
 
 module.exports = {

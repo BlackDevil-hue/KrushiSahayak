@@ -1,24 +1,25 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import api from '../services/api';
+import { api } from '../services/api';
 
 const AuthContext = createContext();
 
 export function AuthProvider({ children }) {
-  const [token, setToken] = useState(() => localStorage.getItem('krishi_token') || 'demo_session_token_2026');
+  // Start with NO session - require real login
+  const [token, setToken] = useState(() => localStorage.getItem('krishi_token') || null);
   const [user, setUser] = useState(() => {
     try {
       const savedUser = localStorage.getItem('krishi_user');
-      return savedUser ? JSON.parse(savedUser) : { id: 'farmer_demo', name: 'Farmer User', role: 'farmer' };
+      return savedUser ? JSON.parse(savedUser) : null;
     } catch (e) {
-      return { id: 'farmer_demo', name: 'Farmer User', role: 'farmer' };
+      return null;
     }
   });
   const [profile, setProfile] = useState(() => {
     try {
       const savedProfile = localStorage.getItem('krishi_profile');
-      return savedProfile ? JSON.parse(savedProfile) : { name: 'Farmer User', state: 'Maharashtra', district: 'Pune', cropTypes: ['Wheat', 'Rice'], landSize: '2.5' };
+      return savedProfile ? JSON.parse(savedProfile) : null;
     } catch (e) {
-      return { name: 'Farmer User', state: 'Maharashtra', district: 'Pune', cropTypes: ['Wheat', 'Rice'], landSize: '2.5' };
+      return null;
     }
   });
   const [loading, setLoading] = useState(false);
@@ -52,42 +53,25 @@ export function AuthProvider({ children }) {
   }, [profile]);
 
   /**
-   * Request OTP for mobile login
+   * Step 1: Initiate OTP login (Firebase handles SMS sending)
    */
   const login = async (phone) => {
-    setLoading(true);
-    setError(null);
-    try {
-      try {
-        const response = await api.auth.sendOtp(phone);
-        return response;
-      } catch (err) {
-        // Fallback for standalone/offline dev mode
-        console.warn('API backend not reachable, using dev mode response:', err.message);
-        return { success: true, message: 'OTP sent successfully (Dev mode hint: use 123456)' };
-      }
-    } catch (err) {
-      setError(err.message);
-      throw err;
-    } finally {
-      setLoading(false);
-    }
+    // Nothing to call on backend for OTP initiation - Firebase handles it
+    return { success: true };
   };
 
   /**
-   * Verify OTP and complete authentication
+   * Step 2: Verify OTP - called after Firebase confirms the OTP
+   * firebaseToken is the ID token from Firebase, proving the phone was verified
    */
   const verifyOtp = async (phone, otp, firebaseToken) => {
     setLoading(true);
     setError(null);
     try {
-      // Pass firebaseToken to backend so it knows Firebase already verified this number
       const authData = await api.auth.verifyOtp(phone, otp, firebaseToken);
       setToken(authData.token);
       setUser(authData.user);
-      if (authData.profile) {
-        setProfile(authData.profile);
-      }
+      if (authData.profile) setProfile(authData.profile);
       return authData;
     } catch (err) {
       setError(err.message);
@@ -98,59 +82,28 @@ export function AuthProvider({ children }) {
   };
 
   /**
-   * Google OAuth sign-in handler
+   * Google Sign-In handler
+   * credentialPayload: { idToken } from Google One Tap, or { provider: 'google' }
    */
   const googleAuth = async (credentialPayload) => {
     setLoading(true);
     setError(null);
     try {
-      let authData;
-      try {
-        authData = await api.auth.googleAuth(credentialPayload || { provider: 'google' });
-      } catch (err) {
-        // Dev fallback for Google Auth
-        const mockUser = {
-          id: 'google_farmer_' + Math.random().toString(36).substr(2, 9),
-          phone: '',
-          email: 'farmer@gmail.com',
-          name: 'Ramesh Kumar (Google Farmer)',
-          role: 'farmer',
-        };
-        const mockProfile = {
-          name: 'Ramesh Kumar',
+      const authData = await api.auth.googleAuth(credentialPayload || { provider: 'google' });
+      setToken(authData.token);
+      setUser(authData.user);
+      if (authData.profile) {
+        setProfile(authData.profile);
+      } else {
+        setProfile({
+          name: authData.user?.name || authData.user?.email?.split('@')[0] || 'Farmer',
           state: 'Maharashtra',
           district: 'Pune',
           category: 'General',
-          landSize: '2.5',
-          farmerType: 'Smallholder',
-          cropTypes: ['Wheat', 'Rice'],
-          incomeBracket: '1-3 Lakhs',
+          cropTypes: ['Wheat'],
           language: 'hi',
-        };
-        authData = {
-          token: 'mock_google_jwt_' + Date.now(),
-          user: mockUser,
-          profile: mockProfile,
-        };
+        });
       }
-
-      setToken(authData.token);
-      setUser(authData.user);
-      
-      const activeProfile = authData.profile || {
-        name: authData.user?.name || 'Google Farmer',
-        state: 'Maharashtra',
-        district: 'Pune',
-        category: 'General',
-        landSize: '2.5',
-        farmerType: 'Smallholder',
-        cropTypes: ['Wheat', 'Rice'],
-        incomeBracket: '1-3 Lakhs',
-        language: 'hi',
-      };
-      setProfile(activeProfile);
-      authData.profile = activeProfile;
-      
       return authData;
     } catch (err) {
       setError(err.message);
@@ -161,7 +114,7 @@ export function AuthProvider({ children }) {
   };
 
   /**
-   * Update or Save Farmer Profile
+   * Update Farmer Profile
    */
   const updateProfile = async (profileData) => {
     setLoading(true);
@@ -172,21 +125,17 @@ export function AuthProvider({ children }) {
         updated = await api.farmer.updateProfile(profileData);
       } catch (err) {
         console.warn('Backend update unavailable, saving locally:', err.message);
-        updated = { ...profileData, id: profile?.id || 'prof_' + Date.now(), updatedAt: new Date().toISOString() };
+        updated = { ...profileData, updatedAt: new Date().toISOString() };
       }
-
       const mergedProfile = { ...profile, ...updated };
       setProfile(mergedProfile);
-
-      // Also update user or create session if registering directly
       if (!user) {
-        const newUser = {
+        setUser({
           id: 'farmer_' + Math.random().toString(36).substr(2, 9),
           name: profileData.name || 'Farmer',
           phone: profileData.phone || '',
           role: 'farmer',
-        };
-        setUser(newUser);
+        });
         setToken('token_' + Date.now());
       } else if (profileData.name) {
         setUser((prev) => ({ ...prev, name: profileData.name }));
@@ -201,7 +150,7 @@ export function AuthProvider({ children }) {
   };
 
   /**
-   * Logout user and clear tokens
+   * Logout user and clear all stored data
    */
   const logout = () => {
     setToken(null);

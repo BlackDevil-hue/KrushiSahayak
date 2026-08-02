@@ -29,19 +29,12 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // Security Headers
-app.use(helmet());
+app.use(helmet({ contentSecurityPolicy: false }));
 
-// Enable CORS securely
-const allowedOrigins = process.env.CLIENT_URL ? process.env.CLIENT_URL.split(',') : ['http://localhost:5173', 'capacitor://localhost', 'http://localhost'];
+// Enable CORS - allow all origins for mobile app compatibility
 app.use(
   cors({
-    origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        callback(new Error('Not allowed by CORS'));
-      }
-    },
+    origin: true, // allow all origins (mobile apps don't have a single origin)
     credentials: true,
   })
 );
@@ -89,6 +82,11 @@ app.get('/', (req, res) => {
     version: '1.0.0',
     timestamp: new Date().toISOString(),
   });
+});
+
+// Health check endpoint - used by app to wake Render backend
+app.get('/api/health', (req, res) => {
+  res.status(200).json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
 // Connect API routes
