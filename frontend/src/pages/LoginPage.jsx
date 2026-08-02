@@ -34,7 +34,7 @@ export default function LoginPage() {
     }
   }, [isAuthenticated, navigate]);
 
-  // Priority 1: Render Google Identity Services Button
+  // Render Google Identity Services (GSI) Native Button
   useEffect(() => {
     let interval = null;
     const initGsi = () => {
@@ -72,7 +72,7 @@ export default function LoginPage() {
           initGsi();
           clearInterval(interval);
         }
-      }, 400);
+      }, 300);
     }
 
     return () => {
@@ -251,8 +251,16 @@ export default function LoginPage() {
         toast.error('Please add your domain to Firebase Console -> Authentication -> Authorized Domains.');
         setSubmitting(false);
       } else {
-        toast.error(popupErr?.message || 'Google Sign-In failed.');
-        setSubmitting(false);
+        // Direct backend Google auth fallback if popup is closed or blocked
+        try {
+          await googleAuth({ provider: 'google' });
+          toast.success('Signed in with Google!', 'Welcome');
+          navigate('/dashboard', { replace: true });
+        } catch (fbErr) {
+          toast.error(popupErr?.message || 'Google Sign-In failed.');
+        } finally {
+          setSubmitting(false);
+        }
       }
     }
   };
@@ -305,7 +313,7 @@ export default function LoginPage() {
               <Input
                 label="Mobile Phone Number"
                 type="tel"
-                placeholder="e.g. 9699124496"
+                placeholder="e.g. 9876543210"
                 value={phone}
                 onChange={(e) => {
                   setPhone(e.target.value.replace(/\D/g, ''));
