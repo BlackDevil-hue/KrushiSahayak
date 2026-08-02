@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult } from 'firebase/auth';
 import Layout from '../components/Layout';
@@ -10,6 +10,8 @@ import { useToast } from '../context/ToastContext';
 import { Phone, KeyRound, ArrowRight, CheckCircle2, RefreshCw } from 'lucide-react';
 import { sendFirebaseOtp, clearRecaptcha } from '../services/firebase';
 
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '957957375070-9938oi6tvnv6416uukj5o3vt75kn76oj.apps.googleusercontent.com';
+
 export default function LoginPage() {
   const [step, setStep] = useState('phone');
   const [phone, setPhone] = useState('');
@@ -18,12 +20,12 @@ export default function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
   const [phoneError, setPhoneError] = useState('');
   const [otpError, setOtpError] = useState('');
+  const googleButtonRef = useRef(null);
 
   const { verifyOtp, googleAuth, isAuthenticated } = useAuth();
   const toast = useToast();
   const navigate = useNavigate();
   const location = useLocation();
-  const from = location.state?.from?.pathname || '/dashboard';
 
   // Redirect to Dashboard when logged in
   useEffect(() => {
@@ -32,7 +34,72 @@ export default function LoginPage() {
     }
   }, [isAuthenticated, navigate]);
 
-  // Handle Google Redirect Result (if popup switches to redirect)
+  // Priority 1: Render Google Identity Services Button
+  useEffect(() => {
+    let interval = null;
+    const initGsi = () => {
+      if (window.google?.accounts?.id) {
+        try {
+          window.google.accounts.id.initialize({
+            client_id: GOOGLE_CLIENT_ID,
+            callback: handleGsiResponse,
+            auto_select: false,
+          });
+
+          if (googleButtonRef.current) {
+            googleButtonRef.current.innerHTML = '';
+            window.google.accounts.id.renderButton(googleButtonRef.current, {
+              type: 'standard',
+              theme: 'outline',
+              size: 'large',
+              width: 320,
+              text: 'signin_with',
+              shape: 'rectangular',
+              logo_alignment: 'left',
+            });
+          }
+        } catch (e) {
+          console.warn('GSI Render warning:', e);
+        }
+      }
+    };
+
+    if (window.google?.accounts?.id) {
+      initGsi();
+    } else {
+      interval = setInterval(() => {
+        if (window.google?.accounts?.id) {
+          initGsi();
+          clearInterval(interval);
+        }
+      }, 400);
+    }
+
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, []);
+
+  // Handle Google GSI Token Response (Real Google Account Selection)
+  const handleGsiResponse = async (response) => {
+    if (!response?.credential) {
+      toast.error('Google Sign-In was not completed.');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await googleAuth({ idToken: response.credential });
+      toast.success('Signed in with Google successfully!', 'Welcome');
+      navigate('/dashboard', { replace: true });
+    } catch (err) {
+      console.error('Google Auth error:', err);
+      toast.error(err.message || 'Google authentication failed.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Handle Firebase Redirect Result
   useEffect(() => {
     const handleRedirect = async () => {
       const auth = getAuth();
@@ -94,7 +161,7 @@ export default function LoginPage() {
       } else if (fbErr?.code === 'auth/captcha-check-failed') {
         errMsg = 'Security reCAPTCHA failed. Please try again.';
       } else if (fbErr?.code === 'auth/unauthorized-domain') {
-        errMsg = 'Domain not authorized in Firebase Console (add capacitor://localhost).';
+        errMsg = 'Domain not authorized in Firebase Console (add capacitor://localhost & onrender.com).';
       }
       setPhoneError(errMsg);
       toast.error(errMsg, 'Firebase OTP Error');
@@ -144,14 +211,13 @@ export default function LoginPage() {
     }
   };
 
-  // ── Google Sign-In with Account Selection Prompt ───────────────────────────
-  const handleGoogleLogin = async () => {
+  // ── Popup Google Sign-In with Account Selection Prompt ────────────────────
+  const handlePopupGoogleLogin = async () => {
     setSubmitting(true);
     const auth = getAuth();
     const provider = new GoogleAuthProvider();
     provider.addScope('email');
     provider.addScope('profile');
-    // Force Google to show the Account Picker screen ("Choose an account")
     provider.setCustomParameters({ prompt: 'select_account' });
 
     try {
@@ -180,6 +246,9 @@ export default function LoginPage() {
         }
       } else if (popupErr?.code === 'auth/popup-closed-by-user') {
         toast.info('Google Sign-In cancelled by user.');
+        setSubmitting(false);
+      } else if (popupErr?.code === 'auth/unauthorized-domain') {
+        toast.error('Please add your domain to Firebase Console -> Authentication -> Authorized Domains.');
         setSubmitting(false);
       } else {
         toast.error(popupErr?.message || 'Google Sign-In failed.');
@@ -331,36 +400,42 @@ export default function LoginPage() {
           </div>
 
           {/* Google Sign-In */}
-          <button
-            type="button"
-            onClick={handleGoogleLogin}
-            disabled={submitting}
-            style={{
-              width: '100%',
-              padding: '12px 16px',
-              border: '1.5px solid var(--color-border)',
-              borderRadius: 'var(--radius-md)',
-              backgroundColor: 'var(--color-surface-elevated)',
-              color: 'var(--color-text-primary)',
-              fontWeight: 'var(--font-weight-semibold)',
-              fontSize: 'var(--font-size-base)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '12px',
-              cursor: submitting ? 'not-allowed' : 'pointer',
-              opacity: submitting ? 0.7 : 1,
-              transition: 'all 0.2s',
-            }}
-          >
-            <svg width="20" height="20" viewBox="0 0 24 24">
-              <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
-              <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
-              <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
-              <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
-            </svg>
-            Sign in with Google
-          </button>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%', gap: '10px' }}>
+            {/* Google Identity Services (GSI) Button Container */}
+            <div ref={googleButtonRef} style={{ width: '100%', display: 'flex', justifyContent: 'center' }} />
+
+            {/* Custom Google Button Fallback */}
+            <button
+              type="button"
+              onClick={handlePopupGoogleLogin}
+              disabled={submitting}
+              style={{
+                width: '100%',
+                padding: '12px 16px',
+                border: '1.5px solid var(--color-border)',
+                borderRadius: 'var(--radius-md)',
+                backgroundColor: 'var(--color-surface-elevated)',
+                color: 'var(--color-text-primary)',
+                fontWeight: 'var(--font-weight-semibold)',
+                fontSize: 'var(--font-size-base)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '12px',
+                cursor: submitting ? 'not-allowed' : 'pointer',
+                opacity: submitting ? 0.7 : 1,
+                transition: 'all 0.2s',
+              }}
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24">
+                <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
+                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
+              </svg>
+              Sign in with Google Account
+            </button>
+          </div>
 
           {/* Footer Navigation */}
           <div style={{ textAlign: 'center', marginTop: '24px', fontSize: 'var(--font-size-sm)', color: 'var(--color-text-muted)' }}>
