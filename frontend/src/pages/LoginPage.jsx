@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
+import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult } from 'firebase/auth';
 import Layout from '../components/Layout';
 import Card from '../components/Card';
 import Input from '../components/Input';
@@ -18,7 +19,7 @@ export default function LoginPage() {
   const [phoneError, setPhoneError] = useState('');
   const [otpError, setOtpError] = useState('');
 
-  const { login, verifyOtp, googleAuth, isAuthenticated } = useAuth();
+  const { verifyOtp, googleAuth, isAuthenticated } = useAuth();
   const toast = useToast();
   const navigate = useNavigate();
   const location = useLocation();
@@ -31,12 +32,40 @@ export default function LoginPage() {
     }
   }, [isAuthenticated, navigate]);
 
+  // Handle Google Redirect Result (if popup switches to redirect)
+  useEffect(() => {
+    const handleRedirect = async () => {
+      const auth = getAuth();
+      try {
+        const result = await getRedirectResult(auth);
+        if (result && result.user) {
+          setSubmitting(true);
+          const firebaseToken = await result.user.getIdToken();
+          await googleAuth({
+            idToken: firebaseToken,
+            email: result.user.email,
+            name: result.user.displayName,
+          });
+          toast.success(`Welcome, ${result.user.displayName || 'Farmer'}!`, 'Google Sign-In');
+          navigate('/dashboard', { replace: true });
+        }
+      } catch (err) {
+        if (err.code !== 'auth/no-auth-event') {
+          console.warn('Google Redirect Result Error:', err);
+        }
+      } finally {
+        setSubmitting(false);
+      }
+    };
+    handleRedirect();
+  }, []);
+
   // Cleanup reCAPTCHA widget
   useEffect(() => {
     clearRecaptcha('recaptcha-container');
   }, [step]);
 
-  // ── Step 1: Send OTP ────────────────────────────────────────────────────────
+  // ── Step 1: Send Firebase SMS OTP ──────────────────────────────────────────
   const handleSendOtp = async (e) => {
     if (e && e.preventDefault) e.preventDefault();
     setPhoneError('');
@@ -47,79 +76,115 @@ export default function LoginPage() {
     }
 
     setSubmitting(true);
-
     try {
-      // 1. Notify backend / SMS service
-      await login(digits);
-
-      // 2. Attempt Firebase SMS OTP
-      try {
-        clearRecaptcha('recaptcha-container');
-        const result = await sendFirebaseOtp(digits, 'recaptcha-container');
-        setConfirmationResult(result);
-        toast.success(`OTP sent to +91-${digits} via SMS`, 'Check your SMS');
-      } catch (fbErr) {
-        console.warn('Firebase SMS OTP notice:', fbErr?.message || fbErr);
-        toast.success(`Verification code dispatched to +91-${digits}`, 'Enter OTP');
+      clearRecaptcha('recaptcha-container');
+      const result = await sendFirebaseOtp(digits, 'recaptcha-container');
+      setConfirmationResult(result);
+      toast.success(`OTP sent to +91-${digits} via SMS`, 'Check your phone');
+      setStep('otp');
+    } catch (fbErr) {
+      console.error('Firebase Phone Auth Error:', fbErr);
+      clearRecaptcha('recaptcha-container');
+      
+      let errMsg = fbErr?.message || 'Failed to send OTP via Firebase.';
+      if (fbErr?.code === 'auth/invalid-phone-number') {
+        errMsg = 'Invalid phone number. Please enter a valid 10-digit Indian mobile number.';
+      } else if (fbErr?.code === 'auth/too-many-requests') {
+        errMsg = 'Quota/Rate limit exceeded. Please wait a few minutes before retrying.';
+      } else if (fbErr?.code === 'auth/captcha-check-failed') {
+        errMsg = 'Security reCAPTCHA failed. Please try again.';
+      } else if (fbErr?.code === 'auth/unauthorized-domain') {
+        errMsg = 'Domain not authorized in Firebase Console (add capacitor://localhost).';
       }
-      setStep('otp');
-    } catch (err) {
-      toast.success(`Verification code dispatched to +91-${digits}`, 'Enter OTP');
-      setStep('otp');
+      setPhoneError(errMsg);
+      toast.error(errMsg, 'Firebase OTP Error');
     } finally {
       setSubmitting(false);
     }
   };
 
-  // ── Step 2: Verify OTP ──────────────────────────────────────────────────────
+  // ── Step 2: Verify Real Firebase SMS OTP ────────────────────────────────────
   const handleVerifyOtp = async (e) => {
     if (e && e.preventDefault) e.preventDefault();
     setOtpError('');
     const enteredOtp = otp.trim();
-    if (!enteredOtp || enteredOtp.length < 4) {
-      setOtpError('Please enter the verification code');
+    if (!enteredOtp || enteredOtp.length < 6) {
+      setOtpError('Please enter the 6-digit OTP code received via SMS');
       return;
     }
 
-    const digits = phone.replace(/\D/g, '') || '9699124496';
+    if (!confirmationResult) {
+      setOtpError('OTP session expired. Please go back and resend OTP.');
+      return;
+    }
+
     setSubmitting(true);
-
     try {
-      let firebaseToken = null;
-      if (confirmationResult) {
-        try {
-          const firebaseResult = await confirmationResult.confirm(enteredOtp);
-          firebaseToken = await firebaseResult.user.getIdToken();
-        } catch (fbErr) {
-          console.warn('Firebase confirm notice:', fbErr?.message);
-        }
-      }
+      // 1. Confirm OTP with Firebase to obtain verified ID token
+      const firebaseResult = await confirmationResult.confirm(enteredOtp);
+      const firebaseToken = await firebaseResult.user.getIdToken();
 
-      await verifyOtp(digits, enteredOtp, firebaseToken);
+      // 2. Verify with backend to issue JWT session
+      await verifyOtp(phone.replace(/\D/g, ''), enteredOtp, firebaseToken);
 
       toast.success('Login successful! Welcome to KrishiSahayak.', 'Welcome');
       navigate('/dashboard', { replace: true });
     } catch (err) {
-      console.warn('Verify OTP fallback session:', err);
-      toast.success('Login successful! Welcome to KrishiSahayak.', 'Welcome');
-      navigate('/dashboard', { replace: true });
+      console.error('OTP Verification Error:', err);
+      let errMsg = err?.message || 'Invalid verification code. Please check your SMS.';
+      if (err?.code === 'auth/invalid-verification-code') {
+        errMsg = 'Incorrect OTP code. Please check your SMS and try again.';
+      } else if (err?.code === 'auth/code-expired') {
+        errMsg = 'OTP code expired. Please request a new OTP.';
+      }
+      setOtpError(errMsg);
+      toast.error(errMsg, 'Verification Failed');
     } finally {
       setSubmitting(false);
     }
   };
 
-  // ── Google Sign-In Trigger ──────────────────────────────────────────────────
+  // ── Google Sign-In with Account Selection Prompt ───────────────────────────
   const handleGoogleLogin = async () => {
     setSubmitting(true);
+    const auth = getAuth();
+    const provider = new GoogleAuthProvider();
+    provider.addScope('email');
+    provider.addScope('profile');
+    // Force Google to show the Account Picker screen ("Choose an account")
+    provider.setCustomParameters({ prompt: 'select_account' });
+
     try {
-      await googleAuth({ provider: 'google' });
-      toast.success('Signed in with Google! Welcome to KrishiSahayak.', 'Welcome');
+      const result = await signInWithPopup(auth, provider);
+      const firebaseToken = await result.user.getIdToken();
+
+      await googleAuth({
+        idToken: firebaseToken,
+        email: result.user.email,
+        name: result.user.displayName,
+      });
+
+      toast.success(`Welcome, ${result.user.displayName || 'Farmer'}!`, 'Google Sign-In');
       navigate('/dashboard', { replace: true });
-    } catch (err) {
-      toast.success('Signed in with Google! Welcome.', 'Welcome');
-      navigate('/dashboard', { replace: true });
-    } finally {
-      setSubmitting(false);
+    } catch (popupErr) {
+      console.warn('Google Popup error:', popupErr);
+      if (
+        popupErr?.code === 'auth/popup-blocked' ||
+        popupErr?.code === 'auth/cancelled-popup-request'
+      ) {
+        try {
+          await signInWithRedirect(auth, provider);
+        } catch (redirectErr) {
+          toast.error('Google Sign-In redirect failed. Please try again.');
+          setSubmitting(false);
+        }
+      } else if (popupErr?.code === 'auth/popup-closed-by-user') {
+        toast.info('Google Sign-In cancelled by user.');
+        setSubmitting(false);
+      } else {
+        toast.error(popupErr?.message || 'Google Sign-In failed.');
+        setSubmitting(false);
+      }
     }
   };
 
@@ -157,7 +222,7 @@ export default function LoginPage() {
             </h2>
             <p style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-muted)', marginTop: '4px' }}>
               {step === 'phone'
-                ? 'Enter your mobile number to receive OTP'
+                ? 'Enter your mobile number to receive OTP via SMS'
                 : `Enter the 6-digit verification code sent to +91 ${phone}`}
             </p>
           </div>
@@ -182,7 +247,7 @@ export default function LoginPage() {
                 icon={Phone}
                 startAdornment={<span style={{ fontWeight: '600', color: 'var(--color-text-muted)' }}>+91</span>}
                 error={phoneError}
-                helperText="We will send a 6-digit verification code"
+                helperText="We will send a 6-digit verification code via SMS"
               />
               <Button
                 type="submit"
@@ -217,7 +282,7 @@ export default function LoginPage() {
                 required
                 icon={KeyRound}
                 error={otpError}
-                helperText={`OTP requested for +91-${phone}`}
+                helperText={`OTP sent to +91-${phone}`}
               />
               <Button
                 type="submit"
