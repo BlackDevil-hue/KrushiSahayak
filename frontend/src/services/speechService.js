@@ -154,22 +154,49 @@ export function createSTTListener({
 }
 
 /**
- * Text-to-Speech (TTS) Speak function.
- * @param {string} text Text to read aloud
- * @param {Object} options TTS options
- * @param {string} [options.lang='hi-IN'] Preferred language code
- * @param {number} [options.pitch=1.0] Speech pitch (0.5 to 2.0)
- * @param {number} [options.rate=0.95] Speech rate speed (0.5 to 2.0)
- * @param {number} [options.volume=1.0] Speech volume (0 to 1)
- * @param {Function} [options.onStart] Callback when speech begins
- * @param {Function} [options.onEnd] Callback when speech completes
- * @param {Function} [options.onError] Callback on error
+ * Clean markdown symbols for natural TTS speech
  */
-export function speakText(text, options = {}) {
-  if (!isTTSSupported() || !text) {
+export function cleanTextForSpeech(text) {
+  if (!text) return '';
+  return text
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // remove markdown links
+    .replace(/[*#_~`>]/g, '') // remove markdown symbols (*, #, _, ~, `, >)
+    .replace(/^[-\s]+/gm, '') // remove leading dashes/bullets
+    .replace(/\s+/g, ' ') // normalize whitespace
+    .trim();
+}
+
+/**
+ * Request audio recording permission for Web Speech API
+ */
+export async function requestMicrophonePermission() {
+  try {
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // stop tracks immediately after permission check
+      stream.getTracks().forEach((track) => track.stop());
+      return true;
+    }
+  } catch (e) {
+    console.warn('Microphone permission check warning:', e);
+  }
+  return false;
+}
+
+/**
+ * Text-to-Speech (TTS) Speak function.
+ * @param {string} rawText Text to read aloud
+ * @param {Object} options TTS options
+ */
+export function speakText(rawText, options = {}) {
+  if (!isTTSSupported() || !rawText) {
     if (options.onError) options.onError(new Error('TTS not supported or empty text.'));
     return false;
   }
+
+  // Clean markdown out of text for smooth natural speech
+  const text = cleanTextForSpeech(rawText);
+  if (!text) return false;
 
   // Cancel existing speech
   window.speechSynthesis.cancel();
@@ -181,28 +208,37 @@ export function speakText(text, options = {}) {
   utterance.rate = options.rate ?? 0.95;
   utterance.volume = options.volume ?? 1.0;
 
-  // Find matching voice if available
+  const setVoiceAndSpeak = () => {
+    const voices = window.speechSynthesis.getVoices();
+    if (voices && voices.length > 0) {
+      const matchingVoice = voices.find(
+        (v) => v.lang === lang || v.lang.startsWith(lang.split('-')[0])
+      );
+      if (matchingVoice) {
+        utterance.voice = matchingVoice;
+      }
+    }
+
+    if (options.onStart) utterance.onstart = options.onStart;
+    if (options.onEnd) utterance.onend = options.onEnd;
+    if (options.onError) utterance.onerror = (e) => options.onError(e);
+
+    window.speechSynthesis.speak(utterance);
+  };
+
   const voices = window.speechSynthesis.getVoices();
   if (voices && voices.length > 0) {
-    const matchingVoice = voices.find(
-      (v) => v.lang === lang || v.lang.startsWith(lang.split('-')[0])
-    );
-    if (matchingVoice) {
-      utterance.voice = matchingVoice;
-    }
+    setVoiceAndSpeak();
+  } else {
+    // Wait for voices to load in browsers/viewports
+    window.speechSynthesis.onvoiceschanged = () => {
+      window.speechSynthesis.onvoiceschanged = null;
+      setVoiceAndSpeak();
+    };
+    // Fallback attempt if onvoiceschanged doesn't trigger
+    setTimeout(setVoiceAndSpeak, 100);
   }
 
-  if (options.onStart) {
-    utterance.onstart = options.onStart;
-  }
-  if (options.onEnd) {
-    utterance.onend = options.onEnd;
-  }
-  if (options.onError) {
-    utterance.onerror = (e) => options.onError(e);
-  }
-
-  window.speechSynthesis.speak(utterance);
   return true;
 }
 

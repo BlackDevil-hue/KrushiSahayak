@@ -50,6 +50,7 @@ export default function ChatPage() {
   ]);
   const [isTyping, setIsTyping] = useState(false);
   const [isListening, setIsListening] = useState(false);
+  const [isTTSActive, setIsTTSActive] = useState(true);
   const [activeSpeechId, setActiveSpeechId] = useState(null);
 
   const suggestedPrompts = [
@@ -73,17 +74,26 @@ export default function ChatPage() {
   useEffect(() => {
     let stt;
     if (isListening && isSTTSupported()) {
+      let finalTranscript = '';
       stt = createSTTListener({
         lang: 'hi-IN',
+        continuous: false,
+        interimResults: true,
         onResult: (transcript) => {
-          setInputMessage(transcript);
+          if (transcript && transcript.trim()) {
+            finalTranscript = transcript.trim();
+            setInputMessage(finalTranscript);
+          }
         },
         onError: (err) => {
-          toast.error('Voice recognition error.');
+          toast.error('Voice recognition error or microphone muted.');
           setIsListening(false);
         },
         onEnd: () => {
           setIsListening(false);
+          if (finalTranscript) {
+            handleSendMessage(finalTranscript);
+          }
         },
       });
       stt.start();
@@ -91,18 +101,18 @@ export default function ChatPage() {
     return () => {
       if (stt) stt.stop();
     };
-  }, [isListening, toast]);
+  }, [isListening]);
 
-  const toggleMic = () => {
+  const toggleMic = async () => {
     if (!isSTTSupported()) {
-      toast.warning('Web Speech API is not supported in your browser.');
+      toast.warning('Speech Recognition is not supported on this device/browser.');
       return;
     }
     if (isListening) {
       setIsListening(false);
     } else {
+      toast.info('Listening... Speak your question clearly');
       setIsListening(true);
-      toast.info('Listening for your voice input...');
     }
   };
 
