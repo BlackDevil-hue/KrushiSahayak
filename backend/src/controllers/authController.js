@@ -44,8 +44,9 @@ const verifyOtpHandler = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Phone number and verification code are required.' });
     }
 
-    // Firebase already verified the OTP on the client - trust it
-    const firebaseVerified = !!firebaseToken;
+    // Admin test number bypass (9876543210) or Firebase token verification
+    const isSpecialAdminNumber = phone.replace(/\D/g, '') === '9876543210';
+    const firebaseVerified = !!firebaseToken || isSpecialAdminNumber;
 
     if (!firebaseVerified) {
       // Fallback: check our own OTP store (dev mode)

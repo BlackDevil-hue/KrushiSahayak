@@ -1,35 +1,21 @@
 // ─── Base URL Resolution ──────────────────────────────────────────────────────
-// Priority: VITE_API_URL env var → Render backend for all Android/Capacitor builds
 const getBaseUrl = () => {
   if (import.meta.env.VITE_API_URL) {
     return import.meta.env.VITE_API_URL;
   }
-  // Capacitor / Android WebView (both emulator and real device)
+  // Capacitor / Android WebView → 10.0.2.2 routes to PC localhost in emulator
   if (
     typeof window !== 'undefined' &&
     (window.location.protocol === 'capacitor:' ||
-      window.location.protocol === 'file:' ||
-      window.location.hostname === 'localhost')
+      window.location.protocol === 'file:')
   ) {
-    return 'https://krushi-sahayak-backend.onrender.com/api';
+    return 'http://10.0.2.2:5000/api';
   }
+  // Browser dev server
   return '/api';
 };
 
 const BASE_URL = getBaseUrl();
-
-// ─── Wake Render Backend ──────────────────────────────────────────────────────
-// Render free tier sleeps after 15 minutes. Ping it immediately on app load.
-export async function wakeBackend() {
-  try {
-    await fetch(`${BASE_URL}/health`, { method: 'GET', mode: 'cors' });
-  } catch (e) {
-    // ignore - backend will still respond eventually
-  }
-}
-
-// Fire immediately when module loads
-wakeBackend();
 
 // ─── Error Class ─────────────────────────────────────────────────────────────
 export class ApiError extends Error {
