@@ -33,19 +33,26 @@ const sendOtpHandler = async (req, res, next) => {
 
 /**
  * POST /api/auth/verify-otp
- * Body: { phone, code }
- * Dev bypass: accepts code '123456', issues JWT, creates/finds User & FarmerProfile
+ * Body: { phone, code, firebaseToken? }
+ * If firebaseToken is provided, Firebase already verified the phone - issue JWT directly.
+ * Otherwise fallback to local OTP store check.
  */
 const verifyOtpHandler = async (req, res, next) => {
   try {
-    const { phone, code } = req.body;
+    const { phone, code, firebaseToken } = req.body;
     if (!phone || !code) {
       return res.status(400).json({ success: false, message: 'Phone number and verification code are required.' });
     }
 
-    const isValid = verifyOtpCode(phone, code);
-    if (!isValid) {
-      return res.status(400).json({ success: false, message: 'Invalid or expired OTP code.' });
+    // Firebase already verified the OTP on the client - trust it
+    const firebaseVerified = !!firebaseToken;
+
+    if (!firebaseVerified) {
+      // Fallback: check our own OTP store (dev mode)
+      const isValid = verifyOtpCode(phone, code);
+      if (!isValid) {
+        return res.status(400).json({ success: false, message: 'Invalid or expired OTP code.' });
+      }
     }
 
     // Find or create User

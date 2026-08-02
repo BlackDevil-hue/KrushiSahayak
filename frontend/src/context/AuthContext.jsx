@@ -77,33 +77,12 @@ export function AuthProvider({ children }) {
   /**
    * Verify OTP and complete authentication
    */
-  const verifyOtp = async (phone, otp) => {
+  const verifyOtp = async (phone, otp, firebaseToken) => {
     setLoading(true);
     setError(null);
     try {
-      let authData;
-      try {
-        authData = await api.auth.verifyOtp(phone, otp);
-      } catch (err) {
-        // Fallback validation for dev code 123456
-        if (otp === '123456') {
-          const mockUser = {
-            id: 'farmer_' + Math.random().toString(36).substr(2, 9),
-            phone: phone,
-            role: 'farmer',
-            name: user?.name || 'Farmer User',
-          };
-          const mockToken = 'mock_jwt_token_' + Date.now();
-          authData = {
-            token: mockToken,
-            user: mockUser,
-            profile: profile || null,
-          };
-        } else {
-          throw new Error('Invalid OTP code. Please enter 123456 for testing.');
-        }
-      }
-
+      // Pass firebaseToken to backend so it knows Firebase already verified this number
+      const authData = await api.auth.verifyOtp(phone, otp, firebaseToken);
       setToken(authData.token);
       setUser(authData.user);
       if (authData.profile) {

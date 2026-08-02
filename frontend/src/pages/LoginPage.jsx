@@ -33,65 +33,75 @@ export default function LoginPage() {
 
   const from = location.state?.from?.pathname || '/dashboard';
 
-  // Step 1: Send Firebase SMS OTP
+  // Step 1: Send REAL Firebase SMS OTP
   const handleSendOtp = async (e) => {
     e.preventDefault();
     setPhoneError('');
-    if (!phone || phone.length < 10) {
+    if (!phone || phone.replace(/\D/g, '').length < 10) {
       setPhoneError('Please enter a valid 10-digit mobile number');
       return;
     }
 
     setSubmitting(true);
     try {
-      // 1. Trigger backend registration check
-      await login(phone);
-
-      // 2. Dispatch real Firebase SMS OTP
-      try {
-        const result = await sendFirebaseOtp(phone, 'recaptcha-container');
-        setConfirmationResult(result);
-        toast.success(`SMS OTP sent to +91-${phone}!`, 'Firebase SMS');
-      } catch (fbErr) {
-        console.warn('Firebase SMS OTP notice:', fbErr?.message || fbErr);
-        toast.info('OTP Sent! (Use 123456 for instant verification)', 'Verification Code');
-      }
-
+      // Send real SMS OTP via Firebase Phone Auth
+      const result = await sendFirebaseOtp(phone.replace(/\D/g, ''), 'recaptcha-container');
+      setConfirmationResult(result);
+      toast.success(`OTP sent to +91-${phone.replace(/\D/g, '')} via SMS`, 'Check your phone');
       setStep('otp');
-    } catch (err) {
-      toast.error(err.message || 'Failed to send OTP', 'Authentication Error');
-      setPhoneError(err.message);
+    } catch (fbErr) {
+      console.error('Firebase OTP error:', fbErr);
+      const errMsg = fbErr?.code === 'auth/too-many-requests'
+        ? 'Too many attempts. Please wait a few minutes and try again.'
+        : fbErr?.code === 'auth/invalid-phone-number'
+        ? 'Invalid phone number. Please enter a valid 10-digit number.'
+        : fbErr?.code === 'auth/captcha-check-failed'
+        ? 'Security check failed. Please refresh and try again.'
+        : 'Failed to send OTP. Please check your number and try again.';
+      setPhoneError(errMsg);
+      toast.error(errMsg, 'OTP Error');
+      // Reset reCAPTCHA so user can retry
+      if (window.recaptchaVerifier) {
+        window.recaptchaVerifier.clear();
+        window.recaptchaVerifier = null;
+      }
     } finally {
       setSubmitting(false);
     }
   };
 
-  // Step 2: Verify OTP
+  // Step 2: Verify Real Firebase OTP → then get JWT from backend
   const handleVerifyOtp = async (e) => {
-    e.preventDefault();
+    if (e && e.preventDefault) e.preventDefault();
     setOtpError('');
-    if (!otp || otp.length < 4) {
-      setOtpError('Please enter the verification code');
+    if (!otp || otp.trim().length < 6) {
+      setOtpError('Please enter the 6-digit OTP sent to your phone');
       return;
     }
 
     setSubmitting(true);
     try {
-      if (confirmationResult && otp !== '123456') {
-        try {
-          await confirmationResult.confirm(otp);
-        } catch (fbVerErr) {
-          console.warn('Firebase client verify fallback:', fbVerErr);
-        }
+      if (!confirmationResult) {
+        setOtpError('Session expired. Please go back and resend OTP.');
+        return;
       }
-      await verifyOtp(phone, otp);
-      toast.success('Successfully logged in!', 'Welcome Back');
+
+      // Confirm the real OTP with Firebase
+      const firebaseResult = await confirmationResult.confirm(otp.trim());
+      const firebaseToken = await firebaseResult.user.getIdToken();
+
+      // Call backend with Firebase token to get our app JWT
+      await verifyOtp(phone.replace(/\D/g, ''), otp.trim(), firebaseToken);
+      toast.success('Login successful! Welcome to KrishiSahayak.', 'Welcome');
       navigate('/dashboard', { replace: true });
     } catch (err) {
-      console.warn('Verify fallback login:', err);
-      // Ensure seamless login navigation
-      toast.success('Login Successful! Welcome to KrishiSahayak.', 'Welcome');
-      navigate('/dashboard', { replace: true });
+      const errMsg = err?.code === 'auth/invalid-verification-code'
+        ? 'Wrong OTP. Please check the SMS and try again.'
+        : err?.code === 'auth/code-expired'
+        ? 'OTP expired. Please go back and request a new one.'
+        : 'OTP verification failed. Please try again.';
+      setOtpError(errMsg);
+      toast.error(errMsg, 'Verification Failed');
     } finally {
       setSubmitting(false);
     }
@@ -242,44 +252,19 @@ export default function LoginPage() {
             <form onSubmit={handleVerifyOtp}>
               <Input
                 label="Verification Code (OTP)"
-                type="text"
-                placeholder="Enter 6-digit OTP (e.g. 123456)"
+                type="number"
+                placeholder="Enter 6-digit OTP from SMS"
                 value={otp}
                 onChange={(e) => {
-                  const val = e.target.value;
-                  setOtp(val);
-                  if (val === '123456' || val.length === 6) {
-                    setOtpError('');
-                  }
+                  setOtp(e.target.value.replace(/\D/g, '').slice(0, 6));
+                  setOtpError('');
                 }}
                 maxLength={6}
                 required
                 icon={KeyRound}
                 error={otpError}
-                helperText="Tip: Tap button below to auto-fill 123456"
+                helperText={`OTP sent to +91-${phone}`}
               />
-
-              <button
-                type="button"
-                onClick={(e) => {
-                  setOtp('123456');
-                  handleVerifyOtp(e);
-                }}
-                style={{
-                  width: '100%',
-                  padding: '8px 12px',
-                  backgroundColor: 'var(--color-primary-light)',
-                  color: 'var(--color-primary)',
-                  border: '1px dashed var(--color-primary)',
-                  borderRadius: 'var(--radius-md)',
-                  fontWeight: '600',
-                  fontSize: 'var(--font-size-xs)',
-                  cursor: 'pointer',
-                  marginBottom: '12px',
-                }}
-              >
-                ⚡ Instant Login with Demo OTP (123456)
-              </button>
 
               <Button
                 type="submit"
@@ -289,8 +274,9 @@ export default function LoginPage() {
                 loading={submitting}
                 icon={CheckCircle2}
                 iconPosition="right"
+                style={{ marginTop: '8px' }}
               >
-                Verify & Continue
+                Verify & Sign In
               </Button>
 
               <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '16px', fontSize: 'var(--font-size-sm)' }}>

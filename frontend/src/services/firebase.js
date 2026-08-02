@@ -1,50 +1,79 @@
-import { initializeApp } from 'firebase/app';
+import { initializeApp, getApps } from 'firebase/app';
 import { getAuth, RecaptchaVerifier, signInWithPhoneNumber } from 'firebase/auth';
 
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyCYYK8P9fwxsEzJvMt3jMw1D36AusjE9lg",
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "krishisahayak-e9ebd.firebaseapp.com",
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "krishisahayak-e9ebd",
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "krishisahayak-e9ebd.firebasestorage.app",
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "228574650275",
-  appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:228574650275:web:57be050f6e26b43c98c416",
-  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || "G-F4TQKLCDCM"
+  apiKey: "AIzaSyCYYK8P9fwxsEzJvMt3jMw1D36AusjE9lg",
+  authDomain: "krishisahayak-e9ebd.firebaseapp.com",
+  projectId: "krishisahayak-e9ebd",
+  storageBucket: "krishisahayak-e9ebd.firebasestorage.app",
+  messagingSenderId: "228574650275",
+  appId: "1:228574650275:web:57be050f6e26b43c98c416",
+  measurementId: "G-F4TQKLCDCM"
 };
 
-// Initialize Firebase
-const app = initializeApp(firebaseConfig);
+// Initialize Firebase app (only once)
+const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
 export const auth = getAuth(app);
 
 /**
- * Setup Recaptcha Verifier for Phone Auth
- * @param {string} containerId Element ID (e.g., 'recaptcha-container')
+ * Clears existing reCAPTCHA verifier so it can be re-created fresh.
  */
-export const setupRecaptcha = (containerId = 'recaptcha-container') => {
-  if (!window.recaptchaVerifier) {
-    window.recaptchaVerifier = new RecaptchaVerifier(auth, containerId, {
-      size: 'invisible',
-      callback: () => {
-        // reCAPTCHA solved
-      },
-      'expired-callback': () => {
-        // Reset reCAPTCHA
-        window.recaptchaVerifier?.clear();
-        window.recaptchaVerifier = null;
-      }
-    });
+export const clearRecaptcha = () => {
+  if (window.recaptchaVerifier) {
+    try {
+      window.recaptchaVerifier.clear();
+    } catch (e) {
+      // ignore
+    }
+    window.recaptchaVerifier = null;
   }
+};
+
+/**
+ * Creates a fresh invisible reCAPTCHA verifier.
+ * @param {string} containerId - the DOM element ID for the reCAPTCHA container
+ */
+const createRecaptchaVerifier = (containerId) => {
+  clearRecaptcha();
+  window.recaptchaVerifier = new RecaptchaVerifier(auth, containerId, {
+    size: 'invisible',
+    callback: () => {},
+    'expired-callback': () => {
+      clearRecaptcha();
+    },
+  });
   return window.recaptchaVerifier;
 };
 
 /**
- * Send Phone OTP via Firebase
- * @param {string} phoneNumber E.164 formatted phone (e.g., +919876543210)
- * @param {string} containerId Element ID for reCAPTCHA
+ * Sends a real SMS OTP to the given phone number via Firebase Phone Auth.
+ * @param {string} phone - 10-digit Indian phone number (without +91)
+ * @param {string} containerId - DOM element ID for invisible reCAPTCHA
+ * @returns {Promise<ConfirmationResult>} - use result.confirm(otp) to verify
  */
-export const sendFirebaseOtp = async (phoneNumber, containerId = 'recaptcha-container') => {
-  const formattedPhone = phoneNumber.startsWith('+') ? phoneNumber : `+91${phoneNumber}`;
-  const appVerifier = setupRecaptcha(containerId);
-  return await signInWithPhoneNumber(auth, formattedPhone, appVerifier);
+export const sendFirebaseOtp = async (phone, containerId = 'recaptcha-container') => {
+  // Ensure the container element exists in DOM
+  const container = document.getElementById(containerId);
+  if (!container) {
+    throw new Error('reCAPTCHA container not found in page. Please refresh and try again.');
+  }
+
+  // Format to E.164 for India (+91)
+  const digits = phone.replace(/\D/g, '');
+  const formattedPhone = digits.startsWith('91') && digits.length === 12
+    ? `+${digits}`
+    : `+91${digits}`;
+
+  const appVerifier = createRecaptchaVerifier(containerId);
+
+  try {
+    const confirmationResult = await signInWithPhoneNumber(auth, formattedPhone, appVerifier);
+    return confirmationResult;
+  } catch (err) {
+    // Always clear reCAPTCHA on error so user can retry
+    clearRecaptcha();
+    throw err;
+  }
 };
 
 export default app;

@@ -84,7 +84,7 @@ export async function fetchAPI(endpoint, options = {}) {
 export const api = {
   auth: {
     sendOtp: (phone) => fetchAPI('/auth/send-otp', { method: 'POST', body: { phone } }),
-    verifyOtp: (phone, otp) => fetchAPI('/auth/verify-otp', { method: 'POST', body: { phone, otp } }),
+    verifyOtp: (phone, code, firebaseToken) => fetchAPI('/auth/verify-otp', { method: 'POST', body: { phone, code, firebaseToken } }),
     googleAuth: (credential) => fetchAPI('/auth/google', { method: 'POST', body: { credential } }),
     getProfile: () => fetchAPI('/auth/me'),
     updateProfile: (profileData) => fetchAPI('/auth/profile', { method: 'PUT', body: profileData }),
