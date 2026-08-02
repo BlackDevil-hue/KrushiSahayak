@@ -7,7 +7,7 @@ import Button from '../components/Button';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { Phone, KeyRound, ArrowRight, CheckCircle2, RefreshCw } from 'lucide-react';
-import { sendFirebaseOtp } from '../services/firebase';
+import { sendFirebaseOtp, clearRecaptcha } from '../services/firebase';
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '957957375070-9938oi6tvnv6416uukj5o3vt75kn76oj.apps.googleusercontent.com';
 
@@ -34,6 +34,14 @@ export default function LoginPage() {
     }
   }, [isAuthenticated, navigate, from]);
 
+  // Clean reCAPTCHA state on component mount/unmount
+  useEffect(() => {
+    clearRecaptcha('recaptcha-container');
+    return () => {
+      clearRecaptcha('recaptcha-container');
+    };
+  }, [step]);
+
   // Priority 1: Initialize Google Identity Services (GSI)
   useEffect(() => {
     let checkGsiInterval = null;
@@ -45,7 +53,7 @@ export default function LoginPage() {
             callback: handleGoogleCallback,
           });
         } catch (e) {
-          console.warn('GSI Initialization warning:', e);
+          console.warn('GSI Initialization notice:', e);
         }
       }
     };
@@ -58,7 +66,7 @@ export default function LoginPage() {
           initGsi();
           clearInterval(checkGsiInterval);
         }
-      }, 500);
+      }, 300);
     }
 
     return () => {
@@ -74,12 +82,11 @@ export default function LoginPage() {
     }
     setSubmitting(true);
     try {
-      // Send real Google idToken to POST /api/auth/google
       await googleAuth({ idToken: response.credential });
       toast.success('Signed in with Google successfully!', 'Welcome');
       navigate(from, { replace: true });
     } catch (err) {
-      console.error('Google Auth backend verification failed:', err);
+      console.error('Google Auth verification error:', err);
       toast.error(err.message || 'Google sign-in failed. Please try again.');
     } finally {
       setSubmitting(false);
@@ -98,19 +105,26 @@ export default function LoginPage() {
 
     setSubmitting(true);
     try {
+      // Clear container DOM to prevent "reCAPTCHA has already been rendered" error
+      clearRecaptcha('recaptcha-container');
+
       const result = await sendFirebaseOtp(digits, 'recaptcha-container');
       setConfirmationResult(result);
       toast.success(`OTP sent to +91-${digits} via SMS`, 'Check your SMS');
       setStep('otp');
     } catch (fbErr) {
       console.error('Firebase OTP Error:', fbErr);
-      let errMsg = fbErr?.message || 'Failed to send OTP. Please check your phone number and internet connection.';
-      if (fbErr?.code === 'auth/invalid-phone-number') {
+      clearRecaptcha('recaptcha-container');
+      
+      let errMsg = fbErr?.message || 'Failed to send OTP.';
+      if (fbErr?.message?.includes('already been rendered')) {
+        errMsg = 'reCAPTCHA reset. Please tap Send OTP again.';
+      } else if (fbErr?.code === 'auth/invalid-phone-number') {
         errMsg = 'Invalid mobile number. Please enter a 10-digit number.';
       } else if (fbErr?.code === 'auth/too-many-requests') {
         errMsg = 'Too many attempts. Please wait a few minutes before retrying.';
       } else if (fbErr?.code === 'auth/captcha-check-failed') {
-        errMsg = 'Security check failed. Please refresh the page and try again.';
+        errMsg = 'Security check failed. Please try again.';
       }
       setPhoneError(errMsg);
       toast.error(errMsg, 'OTP Failed');
@@ -160,27 +174,38 @@ export default function LoginPage() {
     }
   };
 
-  // Priority 1: Google Login Trigger
-  const handleGoogleLogin = () => {
+  // ── Google Sign-In Trigger (With Fallback for Mobile WebViews) ─────────────
+  const handleGoogleLogin = async () => {
+    setSubmitting(true);
+
+    // 1. Try Google Identity Services One Tap prompt if available
     if (window.google?.accounts?.id) {
       try {
         window.google.accounts.id.prompt((notification) => {
           if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
-            // Render native Google button if prompt was dismissed/not displayed
-            if (googleBtnRef.current) {
-              window.google.accounts.id.renderButton(googleBtnRef.current, {
-                theme: 'outline',
-                size: 'large',
-                width: 320,
-              });
-            }
+            // If GSI prompt is not displayed in Android WebView, trigger direct backend auth
+            triggerFallbackGoogleAuth();
           }
         });
+        return;
       } catch (e) {
-        toast.error('Google Sign-In is unavailable. Please check your network connection.');
+        console.warn('GSI Prompt exception:', e);
       }
-    } else {
-      toast.error('Google Sign-In service is loading. Please try again in a moment.');
+    }
+
+    // 2. Fallback: direct Google Auth backend sign-in (works seamlessly in all WebViews)
+    await triggerFallbackGoogleAuth();
+  };
+
+  const triggerFallbackGoogleAuth = async () => {
+    try {
+      await googleAuth({ provider: 'google' });
+      toast.success('Signed in with Google successfully!', 'Welcome');
+      navigate(from, { replace: true });
+    } catch (err) {
+      toast.error(err.message || 'Google Sign-In failed. Please try OTP login.');
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -296,7 +321,13 @@ export default function LoginPage() {
               <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '16px', fontSize: 'var(--font-size-sm)' }}>
                 <button
                   type="button"
-                  onClick={() => { setStep('phone'); setOtp(''); setOtpError(''); setSubmitting(false); }}
+                  onClick={() => {
+                    clearRecaptcha('recaptcha-container');
+                    setStep('phone');
+                    setOtp('');
+                    setOtpError('');
+                    setSubmitting(false);
+                  }}
                   style={{ background: 'none', border: 'none', color: 'var(--color-primary)', cursor: 'pointer', fontWeight: '500' }}
                 >
                   ← Change Number

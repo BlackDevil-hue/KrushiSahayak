@@ -16,32 +16,48 @@ const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0
 export const auth = getAuth(app);
 
 /**
- * Clears existing reCAPTCHA verifier so it can be re-created fresh.
+ * Clears existing reCAPTCHA verifier and cleans container DOM.
  */
-export const clearRecaptcha = () => {
+export const clearRecaptcha = (containerId = 'recaptcha-container') => {
   if (window.recaptchaVerifier) {
     try {
       window.recaptchaVerifier.clear();
     } catch (e) {
-      // ignore
+      // ignore clear errors
     }
     window.recaptchaVerifier = null;
+  }
+  const container = document.getElementById(containerId);
+  if (container) {
+    container.innerHTML = '';
   }
 };
 
 /**
- * Creates a fresh invisible reCAPTCHA verifier.
+ * Creates or reuses an invisible reCAPTCHA verifier safely.
  * @param {string} containerId - the DOM element ID for the reCAPTCHA container
  */
-const createRecaptchaVerifier = (containerId) => {
-  clearRecaptcha();
+const getOrCreateRecaptchaVerifier = (containerId = 'recaptcha-container') => {
+  const container = document.getElementById(containerId);
+  if (!container) {
+    throw new Error('reCAPTCHA container not found in page. Please refresh and try again.');
+  }
+
+  if (window.recaptchaVerifier) {
+    return window.recaptchaVerifier;
+  }
+
+  // Clear container DOM to prevent "reCAPTCHA has already been rendered in this element" error
+  container.innerHTML = '';
+
   window.recaptchaVerifier = new RecaptchaVerifier(auth, containerId, {
     size: 'invisible',
     callback: () => {},
     'expired-callback': () => {
-      clearRecaptcha();
+      clearRecaptcha(containerId);
     },
   });
+
   return window.recaptchaVerifier;
 };
 
@@ -52,26 +68,20 @@ const createRecaptchaVerifier = (containerId) => {
  * @returns {Promise<ConfirmationResult>} - use result.confirm(otp) to verify
  */
 export const sendFirebaseOtp = async (phone, containerId = 'recaptcha-container') => {
-  // Ensure the container element exists in DOM
-  const container = document.getElementById(containerId);
-  if (!container) {
-    throw new Error('reCAPTCHA container not found in page. Please refresh and try again.');
-  }
-
   // Format to E.164 for India (+91)
   const digits = phone.replace(/\D/g, '');
   const formattedPhone = digits.startsWith('91') && digits.length === 12
     ? `+${digits}`
     : `+91${digits}`;
 
-  const appVerifier = createRecaptchaVerifier(containerId);
+  const appVerifier = getOrCreateRecaptchaVerifier(containerId);
 
   try {
     const confirmationResult = await signInWithPhoneNumber(auth, formattedPhone, appVerifier);
     return confirmationResult;
   } catch (err) {
-    // Always clear reCAPTCHA on error so user can retry
-    clearRecaptcha();
+    // Clear reCAPTCHA on error so user can retry safely
+    clearRecaptcha(containerId);
     throw err;
   }
 };
