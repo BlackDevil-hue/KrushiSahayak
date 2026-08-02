@@ -243,15 +243,43 @@ export default function LoginPage() {
               <Input
                 label="Verification Code (OTP)"
                 type="text"
-                placeholder="Enter 6-digit OTP (123456)"
+                placeholder="Enter 6-digit OTP (e.g. 123456)"
                 value={otp}
-                onChange={(e) => setOtp(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setOtp(val);
+                  if (val === '123456' || val.length === 6) {
+                    setOtpError('');
+                  }
+                }}
                 maxLength={6}
                 required
                 icon={KeyRound}
                 error={otpError}
-                helperText="Tip: Enter 123456"
+                helperText="Tip: Tap button below to auto-fill 123456"
               />
+
+              <button
+                type="button"
+                onClick={(e) => {
+                  setOtp('123456');
+                  handleVerifyOtp(e);
+                }}
+                style={{
+                  width: '100%',
+                  padding: '8px 12px',
+                  backgroundColor: 'var(--color-primary-light)',
+                  color: 'var(--color-primary)',
+                  border: '1px dashed var(--color-primary)',
+                  borderRadius: 'var(--radius-md)',
+                  fontWeight: '600',
+                  fontSize: 'var(--font-size-xs)',
+                  cursor: 'pointer',
+                  marginBottom: '12px',
+                }}
+              >
+                ⚡ Instant Login with Demo OTP (123456)
+              </button>
 
               <Button
                 type="submit"
@@ -261,7 +289,6 @@ export default function LoginPage() {
                 loading={submitting}
                 icon={CheckCircle2}
                 iconPosition="right"
-                style={{ marginTop: '16px' }}
               >
                 Verify & Continue
               </Button>

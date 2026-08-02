@@ -2,9 +2,9 @@ const getBaseUrl = () => {
   if (import.meta.env.VITE_API_URL) {
     return import.meta.env.VITE_API_URL;
   }
-  // Capacitor Android runtime uses capacitor://localhost or file://
+  // Capacitor Android runtime on real physical device or emulator
   if (typeof window !== 'undefined' && (window.location.protocol === 'capacitor:' || window.location.protocol === 'file:')) {
-    return 'http://10.0.2.2:5000/api';
+    return 'https://krushi-sahayak-backend.onrender.com/api';
   }
   return '/api';
 };
