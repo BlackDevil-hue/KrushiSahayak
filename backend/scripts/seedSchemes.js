@@ -411,6 +411,18 @@ const runSeeder = async () => {
     const createdSchemes = await Scheme.insertMany(seedSchemes);
 
     console.log(`[Seed] Successfully seeded ${createdSchemes.length} schemes into MongoDB!`);
+    
+    // Wire new scheme notifications for registered farmers
+    try {
+      const { notifyNewScheme } = require('../src/services/notificationService');
+      for (const scheme of createdSchemes) {
+        await notifyNewScheme(scheme);
+      }
+      console.log('[Seed] Dispatched new scheme notifications to registered farmers.');
+    } catch (notifErr) {
+      console.warn('[Seed] Notification dispatch notice:', notifErr.message);
+    }
+
     await disconnectDB();
     process.exit(0);
   } catch (error) {

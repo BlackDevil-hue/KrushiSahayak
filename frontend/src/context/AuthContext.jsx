@@ -55,60 +55,26 @@ export function AuthProvider({ children }) {
    * Step 1: Initiate OTP login
    */
   const login = async (phone) => {
-    try {
-      return await api.auth.sendOtp(phone);
-    } catch (err) {
-      return { success: true, message: 'OTP requested successfully' };
-    }
+    return await api.auth.sendOtp(phone);
   };
 
   /**
-   * Step 2: Verify OTP and GUARANTEE user session state is set
+   * Step 2: Verify OTP and set state when real backend verification succeeds.
+   * Throws real error on failure.
    */
   const verifyOtp = async (phone, otp, firebaseToken) => {
     setLoading(true);
     setError(null);
     try {
-      let authData;
-      try {
-        authData = await api.auth.verifyOtp(phone, otp, firebaseToken);
-      } catch (err) {
-        console.warn('Backend verifyOtp call notice, creating robust local session:', err.message);
-        const cleanPhone = (phone || '').replace(/\D/g, '') || '9876543210';
-        authData = {
-          token: 'jwt_session_token_' + Date.now(),
-          user: {
-            id: 'farmer_' + cleanPhone,
-            phone: cleanPhone,
-            role: 'farmer',
-            name: `Farmer (${cleanPhone.slice(-4)})`,
-          },
-          profile: {
-            name: `Farmer (${cleanPhone.slice(-4)})`,
-            phone: cleanPhone,
-            state: 'Maharashtra',
-            district: 'Pune',
-            category: 'General',
-            cropTypes: ['Wheat', 'Rice'],
-            landSizeAcres: 2.5,
-            language: 'hi',
-          },
-        };
-      }
+      const authData = await api.auth.verifyOtp(phone, otp, firebaseToken);
 
-      // Ensure state is updated synchronously
       setToken(authData.token);
       setUser(authData.user);
       if (authData.profile) setProfile(authData.profile);
 
-      // Force save to localStorage immediately
-      localStorage.setItem('krishi_token', authData.token);
-      localStorage.setItem('krishi_user', JSON.stringify(authData.user));
-      if (authData.profile) localStorage.setItem('krishi_profile', JSON.stringify(authData.profile));
-
       return authData;
     } catch (err) {
-      setError(err.message);
+      setError(err.message || 'OTP verification failed');
       throw err;
     } finally {
       setLoading(false);
@@ -116,52 +82,22 @@ export function AuthProvider({ children }) {
   };
 
   /**
-   * Google Sign-In handler - GUARANTEES user session state is set
+   * Google Sign-In handler - verifies real Google token with backend.
+   * Throws real error on failure.
    */
   const googleAuth = async (credentialPayload) => {
     setLoading(true);
     setError(null);
     try {
-      let authData;
-      try {
-        authData = await api.auth.googleAuth(credentialPayload || { provider: 'google' });
-      } catch (err) {
-        console.warn('Backend googleAuth call notice, creating robust local Google session:', err.message);
-        const userEmail = credentialPayload?.email || 'farmer@gmail.com';
-        const userName = credentialPayload?.name || 'Google Farmer';
-        authData = {
-          token: 'google_jwt_token_' + Date.now(),
-          user: {
-            id: 'google_user_' + Date.now(),
-            email: userEmail,
-            name: userName,
-            role: 'farmer',
-          },
-          profile: {
-            name: userName,
-            email: userEmail,
-            state: 'Maharashtra',
-            district: 'Pune',
-            category: 'General',
-            cropTypes: ['Wheat', 'Rice'],
-            landSizeAcres: 2.5,
-            language: 'hi',
-          },
-        };
-      }
+      const authData = await api.auth.googleAuth(credentialPayload);
 
       setToken(authData.token);
       setUser(authData.user);
       if (authData.profile) setProfile(authData.profile);
 
-      // Force save to localStorage immediately
-      localStorage.setItem('krishi_token', authData.token);
-      localStorage.setItem('krishi_user', JSON.stringify(authData.user));
-      if (authData.profile) localStorage.setItem('krishi_profile', JSON.stringify(authData.profile));
-
       return authData;
     } catch (err) {
-      setError(err.message);
+      setError(err.message || 'Google authentication failed');
       throw err;
     } finally {
       setLoading(false);
@@ -175,29 +111,15 @@ export function AuthProvider({ children }) {
     setLoading(true);
     setError(null);
     try {
-      let updated;
-      try {
-        updated = await api.farmer.updateProfile(profileData);
-      } catch (err) {
-        updated = { ...profileData, updatedAt: new Date().toISOString() };
-      }
+      const updated = await api.farmer.updateProfile(profileData);
       const mergedProfile = { ...profile, ...updated };
       setProfile(mergedProfile);
-      if (!user) {
-        const newUser = {
-          id: 'farmer_' + Math.random().toString(36).substr(2, 9),
-          name: profileData.name || 'Farmer',
-          phone: profileData.phone || '',
-          role: 'farmer',
-        };
-        setUser(newUser);
-        setToken('token_' + Date.now());
-      } else if (profileData.name) {
+      if (profileData.name && user) {
         setUser((prev) => ({ ...prev, name: profileData.name }));
       }
       return mergedProfile;
     } catch (err) {
-      setError(err.message);
+      setError(err.message || 'Profile update failed');
       throw err;
     } finally {
       setLoading(false);

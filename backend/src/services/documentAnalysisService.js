@@ -1,7 +1,7 @@
 /**
  * documentAnalysisService.js
  * AI Document Analysis Service for KrishiSahayak.
- * Uses Gemini API (or fallback parser) to analyze extracted OCR text and output a structured JSON summary.
+ * Uses Gemini API (or fallback parser) to analyze extracted OCR text and output a structured JSON summary in the requested language.
  */
 
 const geminiService = require('./geminiService');
@@ -9,9 +9,10 @@ const geminiService = require('./geminiService');
 /**
  * Analyzes extracted document text using Gemini API or fallback rules to produce a structured JSON summary.
  * @param {string} extractedText - Text obtained from OCR.
+ * @param {string} [language='hi'] - Target language code ('hi', 'mr', 'en', 'gu', 'ta', 'te', 'kn').
  * @returns {Promise<object>} { benefits: [], eligibility: [], requiredDocuments: [], deadlines: [] }
  */
-async function analyzeDocument(extractedText) {
+async function analyzeDocument(extractedText, language = 'hi') {
   const text = (extractedText || '').trim();
 
   if (!text) {
@@ -30,6 +31,8 @@ Analyze the following extracted document OCR text and return ONLY a raw valid JS
 - "requiredDocuments": list of required documents, ID proofs, or certificates mentioned
 - "deadlines": list of deadlines, valid dates, or application timelines mentioned
 
+Important: Provide all strings inside the JSON array values translated into language code "${language}".
+
 Document OCR Text:
 "${text}"
 
@@ -38,6 +41,7 @@ Return strictly valid JSON without any markdown code blocks or extra conversatio
   try {
     const aiResponse = await geminiService.generateContent(prompt, {
       model: 'gemini-1.5-flash',
+      language: language,
     });
 
     const parsedJson = parseAiJsonResponse(aiResponse);

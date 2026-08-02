@@ -1,25 +1,11 @@
+import { Capacitor } from '@capacitor/core';
+import { SpeechRecognition as NativeSpeechRecognition } from '@capacitor-community/speech-recognition';
+import { TextToSpeech as NativeTextToSpeech } from '@capacitor-community/text-to-speech';
+
 /**
- * Web Speech API Service for KrishiSahayak
- * Provides Speech-to-Text (STT) and Text-to-Speech (TTS) capabilities.
+ * Speech Service for KrishiSahayak
+ * Supports both Capacitor native plugins (Android APK) and Web Speech API (Browser).
  */
-
-// Check if Speech-to-Text (STT) is supported in the browser
-export function isSTTSupported() {
-  try {
-    return typeof window !== 'undefined' && Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
-  } catch (e) {
-    return false;
-  }
-}
-
-// Check if Text-to-Speech (TTS) is supported in the browser
-export function isTTSSupported() {
-  try {
-    return typeof window !== 'undefined' && Boolean(window.speechSynthesis && window.SpeechSynthesisUtterance);
-  } catch (e) {
-    return false;
-  }
-}
 
 const LANG_MAP = {
   mr: 'mr-IN',
@@ -38,27 +24,103 @@ function normalizeLang(lang) {
   return lang;
 }
 
+export function isNative() {
+  return typeof window !== 'undefined' && Capacitor.isNativePlatform();
+}
+
+export function isSTTSupported() {
+  if (isNative()) return true;
+  try {
+    return typeof window !== 'undefined' && Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
+  } catch (e) {
+    return false;
+  }
+}
+
+export function isTTSSupported() {
+  if (isNative()) return true;
+  try {
+    return typeof window !== 'undefined' && Boolean(window.speechSynthesis && window.SpeechSynthesisUtterance);
+  } catch (e) {
+    return false;
+  }
+}
+
+export function cleanTextForSpeech(text) {
+  if (!text) return '';
+  return text
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // remove markdown links
+    .replace(/[*#_~`>]/g, '') // remove markdown symbols
+    .replace(/^[-\s]+/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 /**
- * Creates a Speech-to-Text (STT) Recognition controller.
- * @param {Object} options Configuration options
- * @param {Function} options.onResult Callback function receiving transcript string
- * @param {Function} [options.onError] Callback function on error
- * @param {Function} [options.onEnd] Callback function when recognition ends
- * @param {string} [options.lang='hi-IN'] Language code
- * @param {boolean} [options.continuous=false] Whether to listen continuously
- * @param {boolean} [options.interimResults=true] Whether to yield interim results
+ * Creates Speech-to-Text listener (Native Capacitor or Web Speech API)
  */
 export function createSTTListener({
   onResult,
   onError,
   onEnd,
   lang = 'hi-IN',
-  continuous = false,
-  interimResults = true,
 }) {
   const targetLang = normalizeLang(lang);
+  let listening = false;
+
+  if (isNative()) {
+    return {
+      start: async () => {
+        try {
+          const hasPermission = await NativeSpeechRecognition.hasPermission();
+          if (!hasPermission.permission) {
+            await NativeSpeechRecognition.requestPermission();
+          }
+
+          listening = true;
+          NativeSpeechRecognition.removeAllListeners();
+
+          NativeSpeechRecognition.addListener('partialResults', (data) => {
+            if (data?.matches?.length > 0 && onResult) {
+              onResult(data.matches[0]);
+            }
+          });
+
+          await NativeSpeechRecognition.start({
+            language: targetLang,
+            maxResults: 1,
+            prompt: 'Say your question clearly',
+            partialResults: true,
+            popup: false,
+          });
+        } catch (err) {
+          listening = false;
+          console.warn('Native STT error:', err);
+          if (onError) onError(err);
+        }
+      },
+      stop: async () => {
+        try {
+          listening = false;
+          await NativeSpeechRecognition.stop();
+          if (onEnd) onEnd();
+        } catch (err) {
+          console.warn('Native STT stop error:', err);
+        }
+      },
+      abort: async () => {
+        try {
+          listening = false;
+          await NativeSpeechRecognition.stop();
+          if (onEnd) onEnd();
+        } catch (err) {}
+      },
+      isListening: () => listening,
+    };
+  }
+
+  // Fallback: Web Speech API for Browser
   if (!isSTTSupported()) {
-    console.warn('Web Speech STT is not supported in this browser environment.');
     return {
       start: () => {
         if (onError) onError(new Error('Speech recognition is not supported in this browser.'));
@@ -70,50 +132,32 @@ export function createSTTListener({
   }
 
   let recognition = null;
-  let listening = false;
-
   try {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     recognition = new SpeechRecognition();
-
     recognition.lang = targetLang;
-    recognition.continuous = continuous;
-    recognition.interimResults = interimResults;
-    recognition.maxAlternatives = 1;
+    recognition.continuous = false;
+    recognition.interimResults = true;
 
-    recognition.onstart = () => {
-      listening = true;
-    };
-
+    recognition.onstart = () => { listening = true; };
     recognition.onresult = (event) => {
       let transcript = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
         transcript += event.results[i][0].transcript;
       }
-      if (onResult && transcript) {
-        onResult(transcript);
-      }
+      if (onResult && transcript) onResult(transcript);
     };
-
     recognition.onerror = (event) => {
       listening = false;
-      if (onError) {
-        onError(event.error || new Error('Speech recognition error occurred'));
-      }
+      if (onError) onError(event.error || new Error('Speech recognition error'));
     };
-
     recognition.onend = () => {
       listening = false;
-      if (onEnd) {
-        onEnd();
-      }
+      if (onEnd) onEnd();
     };
   } catch (err) {
-    console.warn('Failed to instantiate SpeechRecognition in restricted environment:', err);
     return {
-      start: () => {
-        if (onError) onError(err);
-      },
+      start: () => { if (onError) onError(err); },
       stop: () => {},
       abort: () => {},
       isListening: () => false,
@@ -123,147 +167,87 @@ export function createSTTListener({
   return {
     start: () => {
       try {
-        if (recognition && !listening) {
-          recognition.start();
-        }
+        if (recognition && !listening) recognition.start();
       } catch (err) {
-        console.error('Failed to start speech recognition:', err);
         if (onError) onError(err);
       }
     },
     stop: () => {
       try {
-        if (recognition && listening) {
-          recognition.stop();
-        }
-      } catch (err) {
-        console.error('Failed to stop speech recognition:', err);
-      }
+        if (recognition && listening) recognition.stop();
+      } catch (err) {}
     },
     abort: () => {
       try {
-        if (recognition) {
-          recognition.abort();
-        }
-      } catch (err) {
-        console.error('Failed to abort speech recognition:', err);
-      }
+        if (recognition) recognition.abort();
+      } catch (err) {}
     },
     isListening: () => listening,
   };
 }
 
 /**
- * Clean markdown symbols for natural TTS speech
+ * Text-to-Speech (Native Capacitor or Web Speech API)
  */
-export function cleanTextForSpeech(text) {
-  if (!text) return '';
-  return text
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // remove markdown links
-    .replace(/[*#_~`>]/g, '') // remove markdown symbols (*, #, _, ~, `, >)
-    .replace(/^[-\s]+/gm, '') // remove leading dashes/bullets
-    .replace(/\s+/g, ' ') // normalize whitespace
-    .trim();
-}
-
-/**
- * Request audio recording permission for Web Speech API
- */
-export async function requestMicrophonePermission() {
-  try {
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      // stop tracks immediately after permission check
-      stream.getTracks().forEach((track) => track.stop());
-      return true;
-    }
-  } catch (e) {
-    console.warn('Microphone permission check warning:', e);
-  }
-  return false;
-}
-
-/**
- * Text-to-Speech (TTS) Speak function.
- * @param {string} rawText Text to read aloud
- * @param {Object} options TTS options
- */
-export function speakText(rawText, options = {}) {
-  if (!isTTSSupported() || !rawText) {
-    if (options.onError) options.onError(new Error('TTS not supported or empty text.'));
-    return false;
-  }
-
-  // Clean markdown out of text for smooth natural speech
+export async function speakText(rawText, options = {}) {
   const text = cleanTextForSpeech(rawText);
   if (!text) return false;
 
-  // Cancel existing speech
-  window.speechSynthesis.cancel();
+  const targetLang = normalizeLang(options.lang || 'hi-IN');
 
-  const utterance = new SpeechSynthesisUtterance(text);
-  const lang = normalizeLang(options.lang || 'hi-IN');
-  utterance.lang = lang;
-  utterance.pitch = options.pitch ?? 1.0;
-  utterance.rate = options.rate ?? 0.95;
-  utterance.volume = options.volume ?? 1.0;
-
-  const setVoiceAndSpeak = () => {
-    const voices = window.speechSynthesis.getVoices();
-    if (voices && voices.length > 0) {
-      const matchingVoice = voices.find(
-        (v) => v.lang === lang || v.lang.startsWith(lang.split('-')[0])
-      );
-      if (matchingVoice) {
-        utterance.voice = matchingVoice;
-      }
+  if (isNative()) {
+    try {
+      if (options.onStart) options.onStart();
+      await NativeTextToSpeech.speak({
+        text,
+        lang: targetLang,
+        rate: options.rate ?? 1.0,
+        pitch: options.pitch ?? 1.0,
+        volume: options.volume ?? 1.0,
+        category: 'ambient',
+      });
+      if (options.onEnd) options.onEnd();
+      return true;
+    } catch (err) {
+      console.warn('Native TTS error:', err);
+      if (options.onError) options.onError(err);
+      return false;
     }
-
-    if (options.onStart) utterance.onstart = options.onStart;
-    if (options.onEnd) utterance.onend = options.onEnd;
-    if (options.onError) utterance.onerror = (e) => options.onError(e);
-
-    window.speechSynthesis.speak(utterance);
-  };
-
-  const voices = window.speechSynthesis.getVoices();
-  if (voices && voices.length > 0) {
-    setVoiceAndSpeak();
-  } else {
-    // Wait for voices to load in browsers/viewports
-    window.speechSynthesis.onvoiceschanged = () => {
-      window.speechSynthesis.onvoiceschanged = null;
-      setVoiceAndSpeak();
-    };
-    // Fallback attempt if onvoiceschanged doesn't trigger
-    setTimeout(setVoiceAndSpeak, 100);
   }
 
+  // Fallback: Web Speech API for Browser
+  if (!isTTSSupported()) {
+    if (options.onError) options.onError(new Error('TTS not supported'));
+    return false;
+  }
+
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = targetLang;
+  utterance.pitch = options.pitch ?? 1.0;
+  utterance.rate = options.rate ?? 0.95;
+
+  if (options.onStart) utterance.onstart = options.onStart;
+  if (options.onEnd) utterance.onend = options.onEnd;
+  if (options.onError) utterance.onerror = options.onError;
+
+  window.speechSynthesis.speak(utterance);
   return true;
 }
 
-/**
- * Stops any ongoing Text-to-Speech.
- */
 export function stopSpeech() {
-  if (isTTSSupported()) {
+  if (isNative()) {
+    try {
+      NativeTextToSpeech.stop();
+    } catch (e) {}
+  } else if (isTTSSupported()) {
     window.speechSynthesis.cancel();
   }
 }
 
-/**
- * Checks if SpeechSynthesis is currently speaking.
- */
 export function isSpeaking() {
+  if (isNative()) return false;
   return isTTSSupported() && window.speechSynthesis.speaking;
-}
-
-/**
- * Get available voices from speech synthesis.
- */
-export function getAvailableVoices() {
-  if (!isTTSSupported()) return [];
-  return window.speechSynthesis.getVoices();
 }
 
 const speechService = {
@@ -273,7 +257,6 @@ const speechService = {
   speakText,
   stopSpeech,
   isSpeaking,
-  getAvailableVoices,
 };
 
 export default speechService;

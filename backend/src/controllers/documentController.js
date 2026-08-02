@@ -32,8 +32,9 @@ const uploadDocumentHandler = async (req, res, next) => {
     // 1. OCR text extraction
     const extractedText = await ocrService.extractTextFromDocument(file, file.mimetype || file.originalname);
 
-    // 2. AI document summary analysis
-    const summary = await documentAnalysisService.analyzeDocument(extractedText);
+    // 2. AI document summary analysis in requested language
+    const language = req.body.language || req.query.language || 'hi';
+    const summary = await documentAnalysisService.analyzeDocument(extractedText, language);
 
     // 3. Save Document model to database
     const fileName = file.originalname || file.filename || 'uploaded_document';
